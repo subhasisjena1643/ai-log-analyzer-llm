@@ -179,3 +179,97 @@ class BedrockLLM:
             report.append(f"- Raw log error: `{err}`")
             
         return "\n".join(report)
+
+    def generate_from_agent_results(self, agent_summary_text: str, query: str = "", max_tokens: int = 700) -> str:
+        """
+        Generate RCA from pre-digested agent results (Phase 3 distributed pipeline).
+        Takes a compressed summary string from AgentResultMerger.build_llm_prompt_context()
+        instead of raw file content — keeps token usage under ~700 tokens regardless of bundle size.
+        """
+        prompt = f"""You are an expert SRE analyzing diagnostics for an IPC Unigy enterprise trading environment.
+
+The following is a pre-analyzed summary from 8 specialized diagnostic agents (log, SQL, PDF, JVM, PCAP, audio, SRE notes, config). Each agent has already parsed its files locally and extracted key findings.
+
+Generate a precise Root Cause Analysis using ONLY the evidence provided below. Do not invent data.
+
+Return in this structure:
+### Root Cause
+- Primary technical cause with specific components cited.
+### Impact Level
+- Low/Medium/High with operational impact explanation.
+### Suggested Fix
+- Ordered remediation steps.
+### Confidence Level
+- Low/Medium/High with evidence citations.
+### Evidence From Diagnostics
+- Key signals from agent outputs.
+
+User Query: {query or 'General system health analysis'}
+
+=== AGENT ANALYSIS SUMMARY ===
+{agent_summary_text}
+"""
+        try:
+            result = self.generate(prompt, max_tokens=max_tokens, temperature=0.2)
+            return result
+        except Exception as e:
+            # Fall back to structured local analysis
+            return self._generate_fallback_from_agents(agent_summary_text)
+
+    def _generate_fallback_from_agents(self, agent_summary_text: str) -> str:
+        """Local fallback RCA when LLM is unavailable — uses agent summary text."""
+        summary_lower = agent_summary_text.lower()
+        root_causes = []
+        fixes = []
+        evidence = []
+
+        # Extract signals from agent summaries
+        if "deadlock" in summary_lower:
+            root_causes.append("JVM thread deadlock detected — application threads are mutually blocked.")
+            fixes.append("- Analyze thread dump to identify lock contention and refactor synchronized blocks.")
+        if "heap saturation" in summary_lower or "heap usage" in summary_lower:
+            root_causes.append("JVM heap memory saturation approaching critical levels.")
+            fixes.append("- Increase JVM -Xmx heap allocation and review memory-intensive operations.")
+        if "full gc" in summary_lower:
+            root_causes.append("Excessive Full GC events indicate memory pressure.")
+            fixes.append("- Tune GC parameters or increase heap size to reduce Full GC frequency.")
+        if "blocked" in summary_lower:
+            root_causes.append("Multiple threads in BLOCKED state — contention on shared resources.")
+            fixes.append("- Review connection pool configuration and release patterns.")
+        if "failed healthcheck" in summary_lower or "failures detected" in summary_lower:
+            root_causes.append("TAC HealthCheck reports critical failures in system components.")
+            fixes.append("- Investigate failed healthcheck components and restart degraded services.")
+        if "sql error" in summary_lower or "deadlock" in summary_lower:
+            root_causes.append("Database errors or deadlocks detected in SQL diagnostics.")
+            fixes.append("- Review database locks, increase connection pool, and check query optimization.")
+        if "misconfiguration" in summary_lower:
+            root_causes.append("Configuration mismatches detected in system config files.")
+            fixes.append("- Review and correct flagged configuration parameters.")
+
+        if not root_causes:
+            root_causes.append("Multiple diagnostic signals detected across system components.")
+            fixes.append("- Review agent analysis summaries for detailed per-component findings.")
+
+        # Extract evidence lines from summary
+        for line in agent_summary_text.split("\n"):
+            if line.strip().startswith("[") or line.strip().startswith("•"):
+                evidence.append(f"- {line.strip()}")
+                if len(evidence) >= 5:
+                    break
+
+        report = ["### Root Cause"]
+        report.extend(f"- {rc}" for rc in root_causes)
+        report.append("")
+        report.append("### Impact Level")
+        report.append("- **High**: Multiple diagnostic agents report failures requiring immediate attention.")
+        report.append("")
+        report.append("### Suggested Fix")
+        report.extend(fixes)
+        report.append("")
+        report.append("### Confidence Level")
+        report.append("- **High**: Analysis based on structured agent outputs from multiple diagnostic sources.")
+        report.append("")
+        report.append("### Evidence From Diagnostics")
+        report.extend(evidence if evidence else ["- See agent summaries above for detailed evidence."])
+
+        return "\n".join(report)

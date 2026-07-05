@@ -16,3 +16,13 @@ ui:
   max_log_display: 7000
   ipc_log_path: ipc/log
   max_upload_size_mb: 5000   # ← ADD THIS
+
+agents:
+  max_workers: 4              # Parallel agent threads (1 per file type)
+  streaming_chunk_mb: 10      # Chunk size for streaming reads
+  max_file_size_gb: 15        # Max single file size
+  max_bundle_size_gb: 15      # Max total upload size
+  llm_summary_max_tokens: 700 # Token budget for final LLM call
+  # Optional 3rd-party tool paths (auto-detected if not set)
+  # tshark_path: "C:/Program Files/Wireshark/tshark.exe"
+  # mat_path: "C:/eclipse-mat/ParseHeapDump.bat"

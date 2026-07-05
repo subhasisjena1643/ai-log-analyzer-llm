@@ -391,6 +391,22 @@ from src.services.time_correlation import correlate_errors_by_time
 from src.services.automated_rca import generate_automated_rca
 from src.services.archive_processor import ArchiveProcessor
 
+# Phase 3: Distributed Agent Framework
+from src.services.agent_framework import (
+    FileClassifier, AgentOrchestrator, AgentResultMerger,
+    AGENT_APP_LOG, AGENT_SQL, AGENT_PDF, AGENT_JVM,
+    AGENT_PCAP, AGENT_AUDIO, AGENT_SRE_NOTES, AGENT_CONFIG,
+    AGENT_ARCHIVE, AGENT_UNKNOWN
+)
+from src.services.agents.app_log_agent import AppLogAgent
+from src.services.agents.sql_agent import SQLAgent
+from src.services.agents.pdf_agent import PDFAgent
+from src.services.agents.jvm_agent import JVMAgent
+from src.services.agents.pcap_agent import PCAPAgent
+from src.services.agents.audio_agent import AudioAgent
+from src.services.agents.sre_notes_agent import SRENotesAgent
+from src.services.agents.config_agent import ConfigAgent
+
 # ... after imports ...
 
 def analyze_logs(log_data, query=None, rag_engine=None, kb=None):
@@ -531,9 +547,8 @@ def build_uploaded_log_data(uploaded_files, zone, client, app, version, sub_vers
     except Exception as e:
         archive_processor.clean_temp_dir()
         return None, f"Error processing uploaded files: {str(e)}"
-    finally:
-        # Clean up files on disk as everything is loaded in memory
-        archive_processor.clean_temp_dir()
+    # NOTE: Do NOT clean_temp_dir here — the agent pipeline needs
+    # the extracted files on disk. Cleanup is deferred to after agents run.
         
     return {
         "raw": "\n".join(archive_results["raw_logs_text"]),
@@ -550,7 +565,8 @@ def build_uploaded_log_data(uploaded_files, zone, client, app, version, sub_vers
         "memory_context": archive_results["memory_context"],
         "inference_context": archive_results["inference_context"],
         "file_counts": archive_results["file_counts"],
-        "all_files_metadata": archive_results.get("all_files_metadata", [])
+        "all_files_metadata": archive_results.get("all_files_metadata", []),
+        "_temp_extract_dir": archive_processor.temp_dir,
     }, None
 
 # Page config
@@ -673,8 +689,11 @@ with st.sidebar:
     custom_folder_path = ""
     if log_source == "Upload log files/archives":
         uploaded_logs = st.file_uploader(
-            "Upload log files or diagnostic archives (.zip, .tar, .sql, .pdf)",
-            type=["log", "txt", "error", "info", "debug", "zip", "tar", "tgz", "gz", "sql", "pdf"],
+            "Upload log files, diagnostic archives, or IPC bundles",
+            type=["log", "txt", "error", "info", "debug", "zip", "tar", "tgz", "gz",
+                  "sql", "pdf", "pcap", "pcapng", "wav", "mp3", "ogg", "flac",
+                  "properties", "conf", "cfg", "ini", "xml", "yaml", "yml",
+                  "hprof"],
             accept_multiple_files=True
         )
     elif log_source == "Scan custom local folder":
@@ -805,6 +824,102 @@ if analyze_btn or 'results' in st.session_state:
                 st.error(f"Error: {error}")
                 st.stop()
             
+            # ⚡ Phase 3: Distributed Agent Analysis
+            with st.spinner("⚡ Running distributed agent analysis..."):
+                agent_results_merged = None
+                try:
+                    # Determine the directory to scan for agents
+                    agent_scan_dir = None
+                    if log_source == "Upload log files/archives":
+                        # Use the temp extraction dir that build_uploaded_log_data preserved
+                        agent_scan_dir = log_data.get("_temp_extract_dir", "./temp_archive_extracted")
+                    elif log_source == "Scan custom local folder" and custom_folder_path:
+                        agent_scan_dir = custom_folder_path
+                    else:
+                        agent_scan_dir = log_reader.get_log_path(zone, client, app, version, sub_version)
+
+                    if agent_scan_dir and os.path.exists(agent_scan_dir):
+                        # Classify all files
+                        classified_files = {}
+                        for root, dirs, files in os.walk(agent_scan_dir):
+                            for fname in files:
+                                fpath = os.path.join(root, fname)
+                                agent_type = FileClassifier.classify(fpath, fname)
+                                if agent_type not in classified_files:
+                                    classified_files[agent_type] = []
+                                classified_files[agent_type].append((fpath, fname))
+
+                        # Initialize orchestrator with all agents
+                        agent_config = config.get("agents", {})
+                        max_workers = agent_config.get("max_workers", 4)
+                        orchestrator = AgentOrchestrator(max_workers=max_workers)
+                        orchestrator.register_agent(AGENT_APP_LOG, AppLogAgent)
+                        orchestrator.register_agent(AGENT_SQL, SQLAgent)
+                        orchestrator.register_agent(AGENT_PDF, PDFAgent)
+                        orchestrator.register_agent(AGENT_JVM, JVMAgent)
+                        orchestrator.register_agent(AGENT_PCAP, PCAPAgent)
+                        orchestrator.register_agent(AGENT_AUDIO, AudioAgent)
+                        orchestrator.register_agent(AGENT_SRE_NOTES, SRENotesAgent)
+                        orchestrator.register_agent(AGENT_CONFIG, ConfigAgent)
+
+                        # Execute all agents in parallel
+                        agent_kwargs = {
+                            "zone": zone, "client": client,
+                            "app": app, "version": f"{version}/{sub_version}"
+                        }
+                        agent_results = orchestrator.execute(
+                            classified_files, **agent_kwargs
+                        )
+
+                        # Merge agent results
+                        agent_results_merged = AgentResultMerger.merge(agent_results)
+
+                        # Enrich log_data with agent context (backward compat)
+                        if agent_results_merged:
+                            # Merge structured logs from agents into existing log_data
+                            existing_structured = log_data.get("structured", [])
+                            agent_structured = agent_results_merged.get("structured_logs", [])
+                            if agent_structured and not existing_structured:
+                                log_data["structured"] = agent_structured
+
+                            # Merge context buckets
+                            for ctx_key in ["sql_context", "pdf_context", "memory_context",
+                                            "inference_context", "pcap_context", "audio_context",
+                                            "config_context"]:
+                                existing_ctx = log_data.get(ctx_key, {})
+                                agent_ctx = agent_results_merged.get(ctx_key, {})
+                                if agent_ctx:
+                                    existing_ctx.update(agent_ctx)
+                                    log_data[ctx_key] = existing_ctx
+
+                            # Merge file metadata
+                            existing_meta = log_data.get("all_files_metadata", [])
+                            agent_meta = agent_results_merged.get("all_files_metadata", [])
+                            if agent_meta:
+                                existing_meta.extend(agent_meta)
+                                log_data["all_files_metadata"] = existing_meta
+
+                            # Store agent results for UI rendering
+                            log_data["agent_summaries"] = agent_results_merged.get("agent_summaries", {})
+                            log_data["agent_timings"] = agent_results_merged.get("agent_timings", {})
+                            log_data["overall_severity"] = agent_results_merged.get("overall_severity", "INFO")
+
+                            # Update file counts
+                            existing_counts = log_data.get("file_counts", {})
+                            agent_counts = agent_results_merged.get("file_counts", {})
+                            for k, v in agent_counts.items():
+                                existing_counts[k] = existing_counts.get(k, 0) + v
+                            log_data["file_counts"] = existing_counts
+
+                except Exception as e:
+                    st.warning(f"Agent analysis encountered an error (falling back to standard pipeline): {e}")
+                finally:
+                    # NOW clean up the temp extraction directory (agents are done)
+                    temp_dir = log_data.get("_temp_extract_dir") if log_data else None
+                    if temp_dir and os.path.exists(temp_dir):
+                        import shutil
+                        shutil.rmtree(temp_dir, ignore_errors=True)
+
             with st.spinner(" Analyzing logs..."):
                 # First, get basic analysis results
                 results = analyze_logs(
@@ -823,19 +938,26 @@ if analyze_btn or 'results' in st.session_state:
                 )
 
                 results["anomaly"] = anomaly_result
-                #  LLM Explanation (Bedrock Claude)
+                #  LLM Explanation — use agent-based pathway if available
                 if anomaly_result.get("anomaly_detected"):
                     try:
                         sample_log = "\n".join(results.get("error_lines", [])[:5]) or "ERROR: Unknown issue"
                         results["error_type"] = classify_log(sample_log)
-                        # Extract diagnostic sets from uploaded log_data if present
-                        archive_ctx = {
-                            "sql_context": log_data.get("sql_context", {}),
-                            "pdf_context": log_data.get("pdf_context", {}),
-                            "memory_context": log_data.get("memory_context", {}),
-                            "inference_context": log_data.get("inference_context", {})
-                        }
-                        llm_output = analyze_log_with_llm(sample_log, archive_context=archive_ctx)
+
+                        # Use agent-based LLM pathway if agent results available
+                        if agent_results_merged:
+                            llm_summary = AgentResultMerger.build_llm_prompt_context(agent_results_merged)
+                            llm_output = bedrock_llm.generate_from_agent_results(llm_summary, query=query)
+                        else:
+                            # Fallback to legacy pathway
+                            archive_ctx = {
+                                "sql_context": log_data.get("sql_context", {}),
+                                "pdf_context": log_data.get("pdf_context", {}),
+                                "memory_context": log_data.get("memory_context", {}),
+                                "inference_context": log_data.get("inference_context", {})
+                            }
+                            llm_output = analyze_log_with_llm(sample_log, archive_context=archive_ctx)
+
                         results["llm_explanation"] = llm_output
                         st.session_state["llm_ready"] = True
                     except Exception as e:
@@ -862,6 +984,13 @@ if analyze_btn or 'results' in st.session_state:
                 )
 
                 results["automated_rca"] = auto_rca
+
+                # Store agent analysis metadata in results for UI
+                if agent_results_merged:
+                    results["agent_summaries"] = agent_results_merged.get("agent_summaries", {})
+                    results["agent_timings"] = agent_results_merged.get("agent_timings", {})
+                    results["overall_severity"] = agent_results_merged.get("overall_severity", "INFO")
+                    results["total_agent_findings"] = agent_results_merged.get("total_findings", 0)
 
 
                 # Then, get RCA from RAG engine
@@ -899,6 +1028,7 @@ if analyze_btn or 'results' in st.session_state:
                 source_label = "uploaded files" if log_data.get("source") == "upload" else "selected log folder"
                 st.success(
                     f" Analysis complete! Found {len(log_data['structured'])} "
+
                     f"log entries across {log_data.get('file_count', 0)} {source_label}"
                 )
     else:
@@ -919,7 +1049,7 @@ if analyze_btn or 'results' in st.session_state:
     # Display results in tabs
     # --- Tabs definition ---
 
-    tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
+    tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10, tab11 = st.tabs([
         "RCA Summary",
         "Analytics",
         "Evidence",
@@ -927,6 +1057,10 @@ if analyze_btn or 'results' in st.session_state:
         "Log Details",
         "AI Explanation",
         "Extracted Diagnostics",
+        "PCAP Analysis",
+        "Audio Analysis",
+        "Config Analysis",
+        "Agent Timeline",
     ])
 
 # --- Tab usage ---
@@ -1609,6 +1743,207 @@ if analyze_btn or 'results' in st.session_state:
                             st.markdown(data.get("content", ""))
         else:
             st.info("Run analysis to view extracted archive diagnostics.")
+
+    # ===== TAB 8: PCAP Analysis =====
+    with tab8:
+        st.subheader("🌐 PCAP / Network Analysis")
+        if 'log_data' in st.session_state and isinstance(st.session_state.log_data, dict):
+            pcap_ctx = st.session_state.log_data.get("pcap_context", {})
+            if pcap_ctx:
+                for file, data in pcap_ctx.items():
+                    with st.expander(f"📡 {file}", expanded=True):
+                        if data.get("packet_count"):
+                            col1, col2, col3 = st.columns(3)
+                            with col1:
+                                st.metric("Packets", f"{data.get('packet_count', 0):,}")
+                            with col2:
+                                st.metric("Duration", f"{data.get('duration_seconds', 0)}s")
+                            with col3:
+                                st.metric("Unique Sources", data.get("unique_sources", "N/A"))
+
+                            # Protocol distribution chart
+                            protocols = data.get("protocols", {})
+                            if protocols:
+                                proto_df = pd.DataFrame(
+                                    [{"Protocol": k, "Count": v} for k, v in protocols.items()]
+                                )
+                                fig = px.bar(proto_df, x="Protocol", y="Count",
+                                            title="Protocol Distribution", color="Protocol")
+                                fig.update_layout(height=300, showlegend=False)
+                                st.plotly_chart(fig, use_container_width=True)
+
+                            # Source/Dest IPs
+                            if data.get("top_sources"):
+                                st.write("**Top Source IPs:**")
+                                st.write(", ".join(data["top_sources"][:10]))
+                            if data.get("top_destinations"):
+                                st.write("**Top Destination IPs:**")
+                                st.write(", ".join(data["top_destinations"][:10]))
+                        elif data.get("format") == "pcapng":
+                            st.info("PCAPNG format detected. Install tshark for deeper analysis.")
+                        elif data.get("type") == "pcap_am_metadata":
+                            st.info("PCAP-AM metadata file — proprietary IPC format.")
+                            if data.get("content_preview"):
+                                st.code(data["content_preview"][:2000], language="text")
+                        else:
+                            st.info(f"PCAP file registered: {file}")
+                            if data.get("error"):
+                                st.warning(data["error"])
+            else:
+                st.info("No PCAP/network capture files detected. Upload .pcap or .pcapng files to analyze network traffic.")
+        else:
+            st.info("Run analysis to view PCAP diagnostics.")
+
+    # ===== TAB 9: Audio Analysis =====
+    with tab9:
+        st.subheader("🔊 Audio / CDR Analysis")
+        if 'log_data' in st.session_state and isinstance(st.session_state.log_data, dict):
+            audio_ctx = st.session_state.log_data.get("audio_context", {})
+            if audio_ctx:
+                for file, data in audio_ctx.items():
+                    with st.expander(f"🎵 {file}", expanded=True):
+                        file_type = data.get("type", "unknown")
+
+                        if file_type == "cdr_text":
+                            # CDR analysis
+                            col1, col2, col3 = st.columns(3)
+                            with col1:
+                                st.metric("Total Calls", data.get("total_calls", 0))
+                            with col2:
+                                st.metric("Failed Calls", data.get("failed_calls", 0))
+                            with col3:
+                                st.metric("Endpoints", data.get("endpoints_count", 0))
+
+                            if data.get("codecs"):
+                                st.write(f"**Codecs Detected:** {', '.join(data['codecs'])}")
+                            if data.get("total_duration_formatted"):
+                                st.write(f"**Total Duration:** {data['total_duration_formatted']}")
+                            if data.get("preview"):
+                                st.write("**CDR Preview:**")
+                                st.code(data["preview"][:2000], language="text")
+
+                        elif file_type in ("wav", "mp3", "ogg", "flac"):
+                            # Audio file metadata
+                            col1, col2, col3 = st.columns(3)
+                            with col1:
+                                st.metric("Duration", data.get("duration_formatted", "N/A"))
+                            with col2:
+                                st.metric("Sample Rate", f"{data.get('sample_rate', 'N/A')} Hz")
+                            with col3:
+                                st.metric("Codec", data.get("codec", "N/A"))
+
+                            if data.get("channels"):
+                                st.write(f"**Channels:** {data['channels']}")
+                            if data.get("bitrate"):
+                                st.write(f"**Bitrate:** {data['bitrate']}")
+                        else:
+                            st.info(f"Audio/CDR file: {file}")
+            else:
+                st.info("No audio/CDR files detected. Upload .wav, .mp3, or CDR text files to analyze call records.")
+        else:
+            st.info("Run analysis to view audio diagnostics.")
+
+    # ===== TAB 10: Config Analysis =====
+    with tab10:
+        st.subheader("⚙️ Configuration Analysis")
+        if 'log_data' in st.session_state and isinstance(st.session_state.log_data, dict):
+            config_ctx = st.session_state.log_data.get("config_context", {})
+            if config_ctx:
+                for file, data in config_ctx.items():
+                    with st.expander(f"📋 {file} ({data.get('format', 'config')})", expanded=True):
+                        col1, col2, col3 = st.columns(3)
+                        with col1:
+                            st.metric("Total Params", data.get("total_params", 0))
+                        with col2:
+                            st.metric("Critical Params", len(data.get("critical_params", {})))
+                        with col3:
+                            st.metric("Issues", len(data.get("misconfigurations", [])))
+
+                        # Critical parameters
+                        critical = data.get("critical_params", {})
+                        if critical:
+                            st.write("**Critical Configuration Parameters:**")
+                            for desc, info in critical.items():
+                                st.write(f"  - **{desc}:** `{info.get('key')}` = `{info.get('value')}`")
+
+                        # Misconfigurations
+                        misconfigs = data.get("misconfigurations", [])
+                        if misconfigs:
+                            st.write("**⚠️ Detected Issues:**")
+                            for mc in misconfigs:
+                                if mc.get("severity") == "WARN":
+                                    st.warning(mc.get("message", ""))
+                                else:
+                                    st.info(mc.get("message", ""))
+
+                        # Show some params
+                        all_params = data.get("all_params", {})
+                        if all_params:
+                            st.write("**Configuration Preview (first 30 params):**")
+                            param_df = pd.DataFrame(
+                                [{"Key": k, "Value": str(v)[:100]} for k, v in list(all_params.items())[:30]]
+                            )
+                            st.dataframe(param_df, use_container_width=True, hide_index=True)
+            else:
+                st.info("No configuration files detected. Upload .properties, .conf, .yaml, or .xml files.")
+        else:
+            st.info("Run analysis to view configuration analysis.")
+
+    # ===== TAB 11: Agent Execution Timeline =====
+    with tab11:
+        st.subheader("⚡ Agent Execution Timeline")
+        if 'results' in st.session_state and st.session_state.results.get("agent_summaries"):
+            results = st.session_state.results
+            summaries = results.get("agent_summaries", {})
+            timings = results.get("agent_timings", {})
+
+            # Overall severity badge
+            severity = results.get("overall_severity", "INFO")
+            severity_colors = {"INFO": "🟢", "WARN": "🟡", "ERROR": "🔴", "CRITICAL": "🔴"}
+            st.markdown(f"### Overall Severity: {severity_colors.get(severity, '⚪')} **{severity}**")
+            st.write(f"**Total Findings:** {results.get('total_agent_findings', 0)}")
+
+            st.markdown("---")
+
+            # Agent execution table
+            agent_data = []
+            for agent_type, summary in summaries.items():
+                duration = timings.get(agent_type, 0)
+                agent_data.append({
+                    "Agent": agent_type.replace("_", " ").title(),
+                    "Duration (ms)": f"{duration:.0f}",
+                    "Summary": summary[:150],
+                })
+
+            if agent_data:
+                st.dataframe(
+                    pd.DataFrame(agent_data),
+                    use_container_width=True,
+                    hide_index=True
+                )
+
+            # Timing chart
+            if timings:
+                timing_df = pd.DataFrame([
+                    {"Agent": k.replace("_", " ").title(), "Duration (ms)": v}
+                    for k, v in timings.items()
+                ])
+                fig = px.bar(timing_df, x="Agent", y="Duration (ms)",
+                            title="Agent Execution Duration",
+                            color="Agent")
+                fig.update_layout(height=350, showlegend=False)
+                st.plotly_chart(fig, use_container_width=True)
+
+            # Individual agent summaries
+            st.markdown("### Agent Details")
+            for agent_type, summary in summaries.items():
+                with st.expander(f"🤖 {agent_type.replace('_', ' ').title()} Agent", expanded=False):
+                    st.write(summary)
+                    duration = timings.get(agent_type, 0)
+                    st.caption(f"Execution time: {duration:.0f}ms")
+        else:
+            st.info("Run analysis with the distributed agent pipeline to see the execution timeline. "
+                    "The agent pipeline runs automatically when you analyze logs.")
 
 else:
     # Landing page
