@@ -4,13 +4,12 @@ import pickle
 import numpy as np
 from typing import List, Dict, Any, Tuple, Optional
 import yaml
-# import annoy
-  
+
 from src.services.embedding_service import EmbeddingService
 
 class FlexibleVectorStore:
     def __init__(self, index_name="log_index", config_path="config.yaml"):
-        with open(config_path, 'r') as f:
+        with open(config_path, 'r', encoding="utf-8") as f:
             config = yaml.safe_load(f)
         
         self.embedding_service = EmbeddingService(config_path)
@@ -30,24 +29,24 @@ class FlexibleVectorStore:
             ("faiss", self._init_faiss),
             ("annoy", self._init_annoy),
             ("sklearn", self._init_sklearn),
-            ("numpy", self._init_numpy)  # Basic numpy fallback
+            ("numpy", self._init_numpy),
         ]
-        
+
         for backend_name, init_func in backends:
             try:
                 init_func()
-                self.backend = "faiss"
-
-                print(f"✅ Using {backend_name} as vector store backend")
+                self.backend = backend_name   # ← FIX: use the actual backend name
+                print(f"[OK] Using {backend_name} as vector store backend")
                 return
             except ImportError as e:
-                print(f"⚠️ {backend_name} not available: {e}")
+                print(f"[INFO] {backend_name} not available: {e}")
                 continue
             except Exception as e:
-                print(f"⚠️ Failed to initialize {backend_name}: {e}")
+                print(f"[WARNING] Failed to initialize {backend_name}: {e}")
                 continue
-        
+
         raise ImportError("No vector store backend available!")
+
     
     def _init_faiss(self):
         """Initialize FAISS backend"""
@@ -82,7 +81,7 @@ class FlexibleVectorStore:
                 self.metadata = data.get('metadata', [])
                 self.dimension = data.get('dimension')
                 self.backend = data.get('backend', self.backend)
-            print(f"📂 Loaded existing index with {len(self.metadata)} documents")
+            print(f"[INFO] Loaded existing index with {len(self.metadata)} documents")
         else:
             self.index = None
             self.metadata = []

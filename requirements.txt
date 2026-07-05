@@ -10,3 +10,7 @@ plotly==5.18.0
 transformers==4.37.2
 torch==2.1.2
 tqdm==4.66.1
+pypdf==6.14.0
+boto3
+python-dotenv
+reportlab==5.0.0

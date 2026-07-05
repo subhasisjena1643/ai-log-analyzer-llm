@@ -1,3 +1,5 @@
+from dotenv import load_dotenv
+load_dotenv()
 from src.services.bedrock_llm import BedrockLLM
 
 

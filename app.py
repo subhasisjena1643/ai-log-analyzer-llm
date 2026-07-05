@@ -9,6 +9,9 @@ import os
 from collections import defaultdict
 from dotenv import load_dotenv
 from src.services.bedrock_llm import BedrockLLM
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.ensemble import IsolationForest
+
 
 # ✅ LOAD ENV FIRST
 load_dotenv()
@@ -40,42 +43,206 @@ def classify_log(log):
         return "Application Error"
     return "Other"
  
-def analyze_log_with_llm(log_text):
-    try:
-        prompt = f"""
-You are a production support expert analyzing enterprise application logs.
+def format_archive_context_for_prompt(archive_context):
+    if not archive_context:
+        return ""
+    
+    parts = []
+    
+    # 1. SQL contexts
+    sql_ctx = archive_context.get("sql_context", {})
+    if sql_ctx:
+        parts.append("=== EXTRACTED DATABASE (SQL) DIAGNOSTICS ===")
+        for file, data in sql_ctx.items():
+            parts.append(f"File: {file}")
+            if data.get("tables_found"):
+                parts.append(f"Tables Found: {', '.join(data['tables_found'])}")
+            if data.get("errors_found"):
+                parts.append("SQL Errors/Exceptions Found:")
+                for err in data["errors_found"][:5]:
+                    parts.append(f"  - {err}")
+            if data.get("queries_count"):
+                parts.append(f"Total Queries Executed: {data['queries_count']}")
+        parts.append("")
 
-Analyze the following log and provide a concise, demo-ready RCA.
+    # 2. PDF contexts
+    pdf_ctx = archive_context.get("pdf_context", {})
+    if pdf_ctx:
+        parts.append("=== EXTRACTED HEALTHCHECK REPORT (PDF) ===")
+        for file, data in pdf_ctx.items():
+            parts.append(f"Report File: {file}")
+            if data.get("failures"):
+                parts.append("Failed Checkpoints:")
+                for f in data["failures"][:5]:
+                    parts.append(f"  - [FAILED] {f}")
+            if data.get("warnings"):
+                parts.append("Degraded Checkpoints:")
+                for w in data["warnings"][:5]:
+                    parts.append(f"  - [WARN] {w}")
+        parts.append("")
+
+    # 3. Memory contexts
+    mem_ctx = archive_context.get("memory_context", {})
+    if mem_ctx:
+        parts.append("=== EXTRACTED JVM & HEAP MEMORY DIAGNOSTICS ===")
+        for file, data in mem_ctx.items():
+            parts.append(f"Diagnostic File: {file}")
+            if data.get("heap_max_mb") or data.get("heap_used_mb"):
+                parts.append(f"  Heap Used: {data.get('heap_used_mb', 'N/A')} MB / Max: {data.get('heap_max_mb', 'N/A')} MB")
+            if data.get("thread_states"):
+                states_str = ", ".join([f"{k}: {v}" for k, v in data["thread_states"].items() if v > 0])
+                parts.append(f"  JVM Thread Counts by State: {states_str}")
+            if data.get("gc_pauses"):
+                parts.append("  Garbage Collection Events / Pauses:")
+                for pause in data["gc_pauses"][:3]:
+                    parts.append(f"    * {pause}")
+        parts.append("")
+
+    # 4. Inference contexts
+    inf_ctx = archive_context.get("inference_context", {})
+    if inf_ctx:
+        parts.append("=== PRIOR PROBLEM INVESTIGATIONS & INFERENCE NOTES ===")
+        for file, data in inf_ctx.items():
+            parts.append(f"Investigation File: {file}")
+            content_preview = data.get("content", "")
+            if content_preview:
+                # preview first 1000 characters
+                parts.append(content_preview[:1000])
+                if len(content_preview) > 1000:
+                    parts.append("... [Truncated Inference Context] ...")
+        parts.append("")
+        
+    return "\n".join(parts)
+
+
+def generate_rca_markdown_report(results, query, log_data):
+    lines = []
+    lines.append("# LogSentry AI - Root Cause Analysis (RCA) Incident Report")
+    lines.append(f"**Generated at:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    lines.append(f"**Zone:** {log_data.get('zone', 'N/A')} | **Client:** {log_data.get('client', 'N/A')} | **App:** {log_data.get('app', 'N/A')} | **Version:** {log_data.get('version', 'N/A')}")
+    lines.append(f"**Query asked:** \"{query}\"")
+    lines.append("---")
+    
+    # AI Explanation Section
+    lines.append("## 🤖 AI Root Cause Analysis (AWS Bedrock)")
+    if results.get("llm_explanation"):
+        lines.append(results["llm_explanation"])
+    else:
+        lines.append("*No AI explanation generated.*")
+    lines.append("")
+    
+    # Automated RCA Summary
+    lines.append("## 📊 Automated Analysis Summary")
+    if results.get("automated_rca"):
+        lines.append(results["automated_rca"])
+    lines.append("")
+    
+    # Time correlation
+    if results.get("time_correlation"):
+        lines.append("### ⏱ Time Correlation Details")
+        lines.append(results["time_correlation"].get("message", ""))
+    lines.append("")
+    
+    # Extracted diagnostics summary
+    lines.append("## 📦 Diagnostics Context Summary")
+    file_counts = log_data.get("file_counts", {})
+    if file_counts:
+        for k, v in file_counts.items():
+            if v > 0:
+                lines.append(f"- **{k.capitalize()} files parsed:** {v}")
+    else:
+        lines.append(f"- **Total files analyzed:** {log_data.get('file_count', 0)}")
+    lines.append("")
+    
+    # SQL contexts summary
+    sql_ctx = log_data.get("sql_context", {})
+    if sql_ctx:
+        lines.append("### 🗄️ Database Contexts")
+        for f, d in sql_ctx.items():
+            lines.append(f"**File:** {f}")
+            if d.get("tables_found"):
+                lines.append(f"- Tables: {', '.join(d['tables_found'])}")
+            if d.get("errors_found"):
+                lines.append("- Errors:")
+                for e in d["errors_found"][:3]:
+                    lines.append(f"  - `{e}`")
+    lines.append("")
+    
+    # JVM memory summary
+    mem_ctx = log_data.get("memory_context", {})
+    if mem_ctx:
+        lines.append("### ☕ JVM Memory Contexts")
+        for f, d in mem_ctx.items():
+            lines.append(f"**File:** {f}")
+            lines.append(f"- Heap Max: {d.get('heap_max_mb', 'N/A')} MB | Used: {d.get('heap_used_mb', 'N/A')} MB")
+            if d.get("thread_states"):
+                states_str = ", ".join([f"{k}: {v}" for k, v in d["thread_states"].items() if v > 0])
+                lines.append(f"- Thread states: {states_str}")
+    lines.append("")
+    
+    # PDF summary
+    pdf_ctx = log_data.get("pdf_context", {})
+    if pdf_ctx:
+        lines.append("### 📄 PDF Health Checks Summary")
+        for f, d in pdf_ctx.items():
+            lines.append(f"**File:** {f}")
+            if d.get("failures"):
+                lines.append("- Failures:")
+                for fail in d["failures"][:3]:
+                    lines.append(f"  - `{fail}`")
+    lines.append("")
+    
+    # Conclusion footer
+    lines.append("---")
+    lines.append("*Report generated by LogSentry AI | Production Support Portal*")
+    
+    return "\n".join(lines)
+
+
+def analyze_log_with_llm(log_text, archive_context=None):
+    try:
+        extra_context = format_archive_context_for_prompt(archive_context)
+        
+        prompt = f"""
+You are an expert production support engineer and site reliability engineer (SRE) analyzing logs and diagnostics for an enterprise trading communications environment (IPC Unigy / central console manager).
+
+Analyze the logs and diagnostic evidence provided below and generate a highly precise, production-support focused Root Cause Analysis (RCA).
+
+If additional diagnostic files (such as database schemas, JVM heap dumps, or healthcheck reports) are provided in the context, integrate them to establish correlation (e.g. database locks causing timeouts, JVM memory exhaustion leading to service drop-offs).
 
 Return the answer in this exact structure:
 
 ### Root Cause
 - Identify the most likely technical cause.
-- Mention the specific service/component if visible.
+- Correlate log error signals with memory, database, or healthcheck warnings if available.
+- Mention specific services/components (e.g. Unigy DB, replication engine, JVM Heap).
 
 ### Impact Level
 - Low, Medium, or High.
-- Give one short reason for the rating.
+- Explain the operational and trading impact (e.g., service failover, synchronization delay, console offline).
 
 ### Suggested Fix
-- Provide practical remediation steps an operations team can take.
+- Provide practical, sequence-ordered remediation steps for the operations team.
 
 ### Confidence Level
 - Low, Medium, or High.
-- Explain what evidence in the log supports the confidence.
+- Cite the supporting evidence from logs/diagnostics.
 
-### Evidence From Log
-- Quote or summarize the key log signals that led to the conclusion.
+### Evidence From Diagnostics
+- Quote or summarize key log signals, SQL errors, JVM heap saturation, or PDF check failures.
 
 Rules:
-- Do not invent services, timestamps, or error codes that are not present.
-- If the log is insufficient, say what additional evidence is needed.
-- Keep the answer clear and production-support focused.
+- Do not invent components, timestamps, or errors.
+- If no JVM memory or SQL files are provided, do not make assumptions; focus strictly on standard log events.
+- Be concise and actionable.
 
-Log:
+Log Events:
 {log_text}
 """
-        result = bedrock_llm.generate(prompt, max_tokens=600, temperature=0.2)
+        if extra_context:
+            prompt += f"\nAdditional Diagnostics Context:\n{extra_context}\n"
+            
+        result = bedrock_llm.generate(prompt, max_tokens=700, temperature=0.2)
         st.session_state["llm_ready"] = True
         st.session_state["llm_error"] = ""
         return result
@@ -197,9 +364,6 @@ def detect_log_anomalies(logs):
 
     return results
 
-load_dotenv()
-
-
 def extract_section(text, section):
     try:
         start = text.index(section) + len(section)
@@ -225,6 +389,7 @@ from src.services.template_rca import TemplateRCA
 from src.services.anomaly_detector import detect_error_anomaly
 from src.services.time_correlation import correlate_errors_by_time
 from src.services.automated_rca import generate_automated_rca
+from src.services.archive_processor import ArchiveProcessor
 
 # ... after imports ...
 
@@ -336,36 +501,56 @@ def analyze_logs(log_data, query=None, rag_engine=None, kb=None):
 
 def build_uploaded_log_data(uploaded_files, zone, client, app, version, sub_version):
     parser = log_reader.parser
-    all_logs = []
-    structured_logs = []
-
-    for uploaded_file in uploaded_files:
-        content = uploaded_file.getvalue().decode("utf-8", errors="ignore")
-        all_logs.append(f"=== Uploaded File: {uploaded_file.name} ===\n{content}")
-
-        for line in content.splitlines():
-            if not line.strip():
-                continue
-            parsed = parser.parse_line(
-                line,
-                zone,
-                client,
-                app,
-                f"{version}/{sub_version}"
-            )
-            if parsed:
-                structured_logs.append(parsed)
-
+    
+    # Instantiate ArchiveProcessor
+    archive_processor = ArchiveProcessor(temp_dir="./temp_archive_extracted")
+    archive_processor.clean_temp_dir()
+    os.makedirs(archive_processor.temp_dir, exist_ok=True)
+    
+    try:
+        # Write all uploaded files to the temp directory
+        for uploaded_file in uploaded_files:
+            target_path = os.path.join(archive_processor.temp_dir, uploaded_file.name)
+            with open(target_path, "wb") as f:
+                # Stream file in 10MB chunks to keep memory usage low for large archives (4-5 GB)
+                uploaded_file.seek(0)
+                while True:
+                    chunk = uploaded_file.read(10 * 1024 * 1024)
+                    if not chunk:
+                        break
+                    f.write(chunk)
+                
+            # If it's an archive, extract it
+            if uploaded_file.name.endswith(('.zip', '.tar', '.tgz', '.tar.gz', '.gz')):
+                archive_processor._extract_file(target_path, archive_processor.temp_dir)
+                
+        # Parse all extracted files
+        archive_results = archive_processor.process_extracted_files(
+            parser, zone, client, app, f"{version}/{sub_version}"
+        )
+    except Exception as e:
+        archive_processor.clean_temp_dir()
+        return None, f"Error processing uploaded files: {str(e)}"
+    finally:
+        # Clean up files on disk as everything is loaded in memory
+        archive_processor.clean_temp_dir()
+        
     return {
-        "raw": "\n".join(all_logs),
-        "structured": structured_logs,
-        "file_count": len(uploaded_files),
+        "raw": "\n".join(archive_results["raw_logs_text"]),
+        "structured": archive_results["structured_logs"],
+        "file_count": len(archive_results.get("all_files_metadata", [])),
         "zone": zone,
         "client": client,
         "app": app,
         "version": f"{version}/{sub_version}",
         "source": "upload",
         "uploaded_files": [uploaded_file.name for uploaded_file in uploaded_files],
+        "sql_context": archive_results["sql_context"],
+        "pdf_context": archive_results["pdf_context"],
+        "memory_context": archive_results["memory_context"],
+        "inference_context": archive_results["inference_context"],
+        "file_counts": archive_results["file_counts"],
+        "all_files_metadata": archive_results.get("all_files_metadata", [])
     }, None
 
 # Page config
@@ -376,7 +561,7 @@ st.set_page_config(
 )
 
 # Load config
-with open("config.yaml", 'r') as f:
+with open("config.yaml", 'r', encoding='utf-8') as f:
     config = yaml.safe_load(f)
 
 # Initialize services
@@ -459,19 +644,19 @@ with st.sidebar:
     
     # Zone selection
     zones = list(log_structure.keys()) if log_structure else ["EMEA", "ASIA", "AMERICA"]
-    zone = st.selectbox("Zone", zones, index=0 if zones else 0)
+    zone = st.selectbox("Zone", zones, index=0 if zones else None)
     
     # Client selection
     clients = list(log_structure.get(zone, {}).keys()) if zone in log_structure else ["Barclays", "HSBC", "JPMorgan"]
-    client = st.selectbox(" Client", clients, index=0 if clients else 0)
+    client = st.selectbox(" Client", clients, index=0 if clients else None)
     
     # Application selection
     apps = list(log_structure.get(zone, {}).get(client, {}).keys()) if zone in log_structure and client in log_structure[zone] else ["Unigy", "Pulse", "Touch"]
-    app = st.selectbox(" Application", apps, index=0 if apps else 0)
+    app = st.selectbox(" Application", apps, index=0 if apps else None)
     
     # Version selection
     versions = log_structure.get(zone, {}).get(client, {}).get(app, []) if zone in log_structure and client in log_structure[zone] and app in log_structure[zone][client] else ["4.0", "3.0"]
-    version = st.selectbox(" Version", versions, index=0 if versions else 0)
+    version = st.selectbox(" Version", versions, index=0 if versions else None)
     
     # Sub-version selection
     sub_versions = ["4.0.1", "3.0.1", "4.0.0", "3.0.0"]  # This could be dynamic
@@ -481,16 +666,19 @@ with st.sidebar:
     st.markdown("---")
     log_source = st.radio(
         "Log Input",
-        ["Use selected log folder", "Upload log files"],
+        ["Use selected log folder", "Scan custom local folder", "Upload log files/archives"],
         horizontal=False
     )
     uploaded_logs = []
-    if log_source == "Upload log files":
+    custom_folder_path = ""
+    if log_source == "Upload log files/archives":
         uploaded_logs = st.file_uploader(
-            "Upload log files",
-            type=["log", "txt", "error", "info", "debug"],
+            "Upload log files or diagnostic archives (.zip, .tar, .sql, .pdf)",
+            type=["log", "txt", "error", "info", "debug", "zip", "tar", "tgz", "gz", "sql", "pdf"],
             accept_multiple_files=True
         )
+    elif log_source == "Scan custom local folder":
+        custom_folder_path = st.text_input("Enter local folder absolute path:", "")
     
     # Time range
     col1, col2 = st.columns(2)
@@ -535,9 +723,9 @@ with st.sidebar:
 if analyze_btn or 'results' in st.session_state:
     if analyze_btn:
         with st.spinner(" Reading logs..."):
-            if log_source == "Upload log files":
+            if log_source == "Upload log files/archives":
                 if not uploaded_logs:
-                    st.error("Please upload at least one log file.")
+                    st.error("Please upload at least one log file or zip archive.")
                     st.stop()
                 log_data, error = build_uploaded_log_data(
                     uploaded_logs,
@@ -547,8 +735,71 @@ if analyze_btn or 'results' in st.session_state:
                     version,
                     sub_version
                 )
+            elif log_source == "Scan custom local folder":
+                if not custom_folder_path:
+                    st.error("Please enter a custom local folder path.")
+                    st.stop()
+                if not os.path.exists(custom_folder_path):
+                    log_data, error = None, f"Local path does not exist: {custom_folder_path}"
+                else:
+                    archive_processor = ArchiveProcessor()
+                    archive_results = archive_processor.process_directory(
+                        custom_folder_path,
+                        log_reader.parser,
+                        zone,
+                        client,
+                        app,
+                        f"{version}/{sub_version}"
+                    )
+                    log_data = {
+                        "raw": "\n".join(archive_results["raw_logs_text"]),
+                        "structured": archive_results["structured_logs"],
+                        "file_count": len(archive_results.get("all_files_metadata", [])),
+                        "zone": zone,
+                        "client": client,
+                        "app": app,
+                        "version": f"{version}/{sub_version}",
+                        "source": "folder",
+                        "sql_context": archive_results["sql_context"],
+                        "pdf_context": archive_results["pdf_context"],
+                        "memory_context": archive_results["memory_context"],
+                        "inference_context": archive_results["inference_context"],
+                        "file_counts": archive_results["file_counts"],
+                        "all_files_metadata": archive_results.get("all_files_metadata", [])
+                    }
+                    error = None
             else:
-                log_data, error = log_reader.read_logs(zone, client, app, version, sub_version)
+                base_path = log_reader.get_log_path(zone, client, app, version, sub_version)
+                if not os.path.exists(base_path):
+                    log_data, error = None, f"Log path does not exist: {base_path}"
+                else:
+                    archive_processor = ArchiveProcessor()
+                    archive_results = archive_processor.process_directory(
+                        base_path,
+                        log_reader.parser,
+                        zone,
+                        client,
+                        app,
+                        f"{version}/{sub_version}"
+                    )
+                    
+                    log_data = {
+                        "raw": "\n".join(archive_results["raw_logs_text"]),
+                        "structured": archive_results["structured_logs"],
+                        "file_count": len(archive_results.get("all_files_metadata", [])),
+                        "zone": zone,
+                        "client": client,
+                        "app": app,
+                        "version": f"{version}/{sub_version}",
+                        "source": "folder",
+                        "sql_context": archive_results["sql_context"],
+                        "pdf_context": archive_results["pdf_context"],
+                        "memory_context": archive_results["memory_context"],
+                        "inference_context": archive_results["inference_context"],
+                        "file_counts": archive_results["file_counts"],
+                        "all_files_metadata": archive_results.get("all_files_metadata", [])
+                    }
+                    error = None
             
             if error:
                 st.error(f"Error: {error}")
@@ -577,7 +828,14 @@ if analyze_btn or 'results' in st.session_state:
                     try:
                         sample_log = "\n".join(results.get("error_lines", [])[:5]) or "ERROR: Unknown issue"
                         results["error_type"] = classify_log(sample_log)
-                        llm_output = analyze_log_with_llm(sample_log)
+                        # Extract diagnostic sets from uploaded log_data if present
+                        archive_ctx = {
+                            "sql_context": log_data.get("sql_context", {}),
+                            "pdf_context": log_data.get("pdf_context", {}),
+                            "memory_context": log_data.get("memory_context", {}),
+                            "inference_context": log_data.get("inference_context", {})
+                        }
+                        llm_output = analyze_log_with_llm(sample_log, archive_context=archive_ctx)
                         results["llm_explanation"] = llm_output
                         st.session_state["llm_ready"] = True
                     except Exception as e:
@@ -647,16 +905,28 @@ if analyze_btn or 'results' in st.session_state:
         results = st.session_state.results
         log_data = st.session_state.log_data
     
-    # Display results in tabs
-   # --- Tabs definition ---
+    # Sidebar export button
+    if 'results' in st.session_state and 'log_data' in st.session_state:
+        report_md = generate_rca_markdown_report(st.session_state.results, query, st.session_state.log_data)
+        st.sidebar.download_button(
+            label="📥 Download RCA Report",
+            data=report_md,
+            file_name=f"RCA_Report_{st.session_state.log_data.get('app', 'App')}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.md",
+            mime="text/markdown",
+            use_container_width=True
+        )
 
-    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
+    # Display results in tabs
+    # --- Tabs definition ---
+
+    tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
         "RCA Summary",
         "Analytics",
         "Evidence",
         "KB Fixes",
         "Log Details",
         "AI Explanation",
+        "Extracted Diagnostics",
     ])
 
 # --- Tab usage ---
@@ -725,30 +995,39 @@ if analyze_btn or 'results' in st.session_state:
         with col3:
             st.metric("Unique Error Types", len(set(results.get('error_lines', []))))
         
-    # 🚨 Anomaly Detection Result
-    if "anomaly" in results:
-        st.markdown("### 🚨 Anomaly Detection")
+        # 🚨 Anomaly Detection Result
+        if "anomaly" in results:
+            st.markdown("### 🚨 Anomaly Detection")
 
-    if results["anomaly"]["anomaly_detected"]:
-        st.error(results["anomaly"]["message"])
-    else:
-        st.success(results["anomaly"]["message"])
+        if "anomaly" in results and results["anomaly"]:
+            anomaly_data = results["anomaly"]
+            st.markdown("### 🚨 Anomaly Detection")
+            if anomaly_data.get("anomaly_detected"):
+                st.error(anomaly_data.get("message", "Anomaly detected"))
+            else:
+                st.success(anomaly_data.get("message", "No anomaly detected"))
+    
 
-    if results["anomaly"].get("spike_detected"):
-        st.warning(
-            f"Error spike detected at {results['anomaly']['spike_time']} "
-            f"({results['anomaly']['spike_count']} errors in "
-            f"{results['anomaly']['bucket_minutes']} minutes)"
-        )
+        if "anomaly" in results and results["anomaly"]:
+            anomaly_data = results["anomaly"]
+            
+            if anomaly_data.get("spike_detected"):
+                st.warning(
+                    f"Error spike detected at {anomaly_data.get('spike_time')} "
+                    f"({anomaly_data.get('spike_count')} errors in "
+                    f"{anomaly_data.get('bucket_minutes')} minutes)"
+                )
 
-    st.write(
-        f"Error Count: {results['anomaly']['error_count']} | "
-        f"Threshold: {results['anomaly']['threshold']}"
-    )
+            st.write(
+                f"Error Count: {anomaly_data.get('error_count', 0)} | "
+                f"Threshold: {anomaly_data.get('threshold', 5)}"
+            )
 
-    if results["anomaly"].get("error_frequency"):
-        frequency_df = pd.DataFrame(results["anomaly"]["error_frequency"])
-        st.bar_chart(frequency_df.set_index("time"))
+            if anomaly_data.get("error_frequency"):
+                frequency_df = pd.DataFrame(anomaly_data["error_frequency"])
+                if not frequency_df.empty:
+                    st.bar_chart(frequency_df.set_index("time"))
+
 
     # Errors Found section - SCROLLABLE GREEN TEXT
     st.markdown("###  Errors Found")
@@ -819,6 +1098,64 @@ if analyze_btn or 'results' in st.session_state:
     with tab2:
         st.subheader("📊 Log Analytics")
 
+        # JVM Heap Memory & Threads Diagnostics Charts (Tailored for support/SRE teams)
+        if 'log_data' in st.session_state and isinstance(st.session_state.log_data, dict):
+            mem_ctx = st.session_state.log_data.get("memory_context", {})
+            if mem_ctx:
+                st.subheader("☕ JVM Heap Memory & Thread Analytics")
+                for file, data in mem_ctx.items():
+                    with st.expander(f"Diagnostics: {file}", expanded=True):
+                        col_m1, col_m2 = st.columns(2)
+                        
+                        # 1. Heap Memory Chart
+                        with col_m1:
+                            heap_used = data.get("heap_used_mb")
+                            heap_max = data.get("heap_max_mb")
+                            heap_comm = data.get("heap_committed_mb") or heap_max
+                            
+                            if heap_used is not None:
+                                labels = ['Used Heap', 'Free/Unallocated Heap']
+                                values = [heap_used, max(0, (heap_max or heap_comm or (heap_used * 1.5)) - heap_used)]
+                                
+                                fig_heap = go.Figure(data=[go.Pie(
+                                    labels=labels,
+                                    values=values,
+                                    hole=0.4,
+                                    marker_colors=['#EF4444' if (heap_used/(heap_max or heap_comm or 1)) > 0.8 else '#3B82F6', '#10B981']
+                                )])
+                                fig_heap.update_layout(
+                                    title=f"Heap Allocation (Max: {heap_max or 'N/A'} MB, Committed: {heap_comm or 'N/A'} MB)",
+                                    height=300
+                                )
+                                st.plotly_chart(fig_heap, use_container_width=True)
+                            else:
+                                st.info("Heap memory sizes not explicitly found in this diagnostic file.")
+                                
+                        # 2. Thread State Counts Chart
+                        with col_m2:
+                            thread_states = data.get("thread_states")
+                            if thread_states and any(v > 0 for v in thread_states.values()):
+                                states = list(thread_states.keys())
+                                counts = list(thread_states.values())
+                                
+                                fig_threads = px.bar(
+                                    x=states,
+                                    y=counts,
+                                    title="JVM Thread State Distribution",
+                                    labels={'x': 'Thread State', 'y': 'Count'},
+                                    color=states,
+                                    color_discrete_map={
+                                        'RUNNABLE': '#10B981',
+                                        'WAITING': '#3B82F6',
+                                        'TIMED_WAITING': '#F59E0B',
+                                        'BLOCKED': '#EF4444'
+                                    }
+                                )
+                                fig_threads.update_layout(height=300, showlegend=False)
+                                st.plotly_chart(fig_threads, use_container_width=True)
+                            else:
+                                st.info("Thread status metrics not found in this diagnostic file.")
+
         if results.get("structured_logs"):
             df = pd.DataFrame(results["structured_logs"])
 
@@ -878,13 +1215,13 @@ if analyze_btn or 'results' in st.session_state:
                     st.metric(" Total Errors", 0)
             
             with col3:
+                import re
                 # Components affected
                 if 'log_stats' in results and 'unique_components' in results['log_stats']:
                     st.metric(" Components", results['log_stats']['unique_components'])
                 else:
                     # Count from error lines if available
                     if 'exact_matches' in results and results['exact_matches']:
-                        import re
                         components = set()
                         for line in results['exact_matches']:
                             match = re.search(r'Component=([A-Za-z]+)', line)
@@ -965,7 +1302,7 @@ if analyze_btn or 'results' in st.session_state:
                             
                             if not df.empty:
                                 # Group by hour
-                                df['hour'] = df['time_parsed'].dt.floor('H')
+                                df['hour'] = df['time_parsed'].dt.floor('h')
                                 hourly_counts = df.groupby('hour').size().reset_index(name='count')
                                 
                                 fig3 = px.line(
@@ -1141,34 +1478,137 @@ if analyze_btn or 'results' in st.session_state:
 
 
     with tab5:
-        # Raw Log Details
-        st.subheader(" Raw Log Contents")
+        if 'log_data' not in st.session_state:
+            st.info("Run analysis first.")
+        else:
+            log_data = st.session_state.log_data
+            # Raw Log Details
+            st.subheader(" Raw Log Contents")
         
-        # Log level filter
-        log_levels = ["ALL", "ERROR", "WARN", "INFO", "DEBUG"]
-        selected_level = st.selectbox("Filter by log level", log_levels)
+            # Log level filter
+            log_levels = ["ALL", "ERROR", "WARN", "INFO", "DEBUG"]
+            selected_level = st.selectbox("Filter by log level", log_levels)
         
-        # Display logs with syntax highlighting
-        raw_logs = log_data['raw']
-        lines = raw_logs.split('\n')
+            # Display logs with syntax highlighting
+            raw_logs = log_data['raw']
+            lines = raw_logs.split('\n')
         
-        # Create a scrollable log viewer
-        log_container = st.container()
-        with log_container:
-            for line in lines[:config['ui']['max_log_display']]:
-                if selected_level == "ALL" or selected_level in line:
-                    line_lower = line.lower()
-                    if 'error' in line_lower:
-                        st.markdown(f'<div class="log-line log-error">{line}</div>', unsafe_allow_html=True)
-                    elif 'warn' in line_lower:
-                        st.markdown(f'<div class="log-line log-warn">{line}</div>', unsafe_allow_html=True)
-                    elif 'info' in line_lower:
-                        st.markdown(f'<div class="log-line log-info">{line}</div>', unsafe_allow_html=True)
-                    else:
-                        st.code(line, language='bash')
+            # Create a scrollable log viewer
+            log_container = st.container()
+            with log_container:
+                for line in lines[:config['ui']['max_log_display']]:
+                    if selected_level == "ALL" or selected_level in line:
+                        line_lower = line.lower()
+                        if 'error' in line_lower:
+                            st.markdown(f'<div class="log-line log-error">{line}</div>', unsafe_allow_html=True)
+                        elif 'warn' in line_lower:
+                            st.markdown(f'<div class="log-line log-warn">{line}</div>', unsafe_allow_html=True)
+                        elif 'info' in line_lower:
+                            st.markdown(f'<div class="log-line log-info">{line}</div>', unsafe_allow_html=True)
+                        else:
+                            st.code(line, language='bash')
         
-        if len(lines) > config['ui']['max_log_display']:
-            st.warning(f"Showing first {config['ui']['max_log_display']} lines. Total lines: {len(lines)}")
+            if len(lines) > config['ui']['max_log_display']:
+                st.warning(f"Showing first {config['ui']['max_log_display']} lines. Total lines: {len(lines)}")
+
+    with tab7:
+        st.subheader("📦 Extracted Archive Diagnostics")
+        if 'log_data' in st.session_state and isinstance(st.session_state.log_data, dict):
+            log_data = st.session_state.log_data
+            sql_ctx = log_data.get("sql_context", {})
+            pdf_ctx = log_data.get("pdf_context", {})
+            mem_ctx = log_data.get("memory_context", {})
+            inf_ctx = log_data.get("inference_context", {})
+            files_meta = log_data.get("all_files_metadata", [])
+            
+            has_data = any([sql_ctx, pdf_ctx, mem_ctx, inf_ctx, files_meta])
+            
+            if not has_data:
+                st.info("No archive diagnostics found in the loaded context. Upload a zip archive to extract SQL, PDF reports, JVM dumps, or notes.")
+            else:
+                # 0. Parsed Files Inventory Table
+                if files_meta:
+                    st.markdown("### 📋 Parsed Files Inventory")
+                    df_files = pd.DataFrame(files_meta)
+                    df_files.columns = ["File Name", "Relative Path", "Detected File Type", "Size", "Highlights/Summary"]
+                    st.dataframe(df_files, use_container_width=True, hide_index=True)
+                    st.markdown("---")
+                # 1. SQL
+                if sql_ctx:
+                    st.markdown("### 🗄️ Database (SQL) Context")
+                    for file, data in sql_ctx.items():
+                        with st.expander(f"SQL Schema/Dump: {file}", expanded=False):
+                            col_s1, col_s2 = st.columns(2)
+                            with col_s1:
+                                st.write(f"**Total Queries/Lines:** {data.get('total_lines', 'N/A')} lines")
+                                if data.get("tables_found"):
+                                    st.write("**Tables Discovered:**")
+                                    for t in data["tables_found"]:
+                                        st.write(f"- `{t}`")
+                                else:
+                                    st.write("No CREATE TABLE statements found.")
+                            with col_s2:
+                                if data.get("errors_found"):
+                                    st.write("**Database Errors Found:**")
+                                    for e in data["errors_found"][:5]:
+                                        st.error(e)
+                                else:
+                                    st.success("No SQL syntax or runtime errors found in preview.")
+                            
+                            st.write("**SQL Content Preview:**")
+                            st.code(data.get("preview", ""), language="sql")
+                
+                # 2. PDF Reports
+                if pdf_ctx:
+                    st.markdown("### 📄 PDF Health Checks")
+                    for file, data in pdf_ctx.items():
+                        with st.expander(f"PDF Report: {file}", expanded=False):
+                            st.write(f"**Pages:** {data.get('total_pages', 'N/A')}")
+                            
+                            # Show failures
+                            failures = data.get("failures", [])
+                            warnings = data.get("warnings", [])
+                            
+                            if failures:
+                                st.write("**Critical Failures Detected:**")
+                                for f in failures:
+                                    st.error(f)
+                            if warnings:
+                                st.write("**Warnings/Degradations Detected:**")
+                                for w in warnings:
+                                    st.warning(w)
+                                    
+                            if not failures and not warnings:
+                                st.success("No failures or warnings found in health check report.")
+                                
+                            st.write("**PDF Extracted Text (First 2000 chars):**")
+                            st.code(data.get("extracted_text", "")[:2000] + "\n...", language="text")
+
+                # 3. Memory
+                if mem_ctx:
+                    st.markdown("### ☕ JVM & Memory Dumps")
+                    for file, data in mem_ctx.items():
+                        with st.expander(f"JVM Memory Diagnostics: {file}", expanded=False):
+                            st.write(f"**Max Heap:** {data.get('heap_max_mb', 'N/A')} MB")
+                            st.write(f"**Committed Heap:** {data.get('heap_committed_mb', 'N/A')} MB")
+                            st.write(f"**Used Heap:** {data.get('heap_used_mb', 'N/A')} MB")
+                            
+                            if data.get("gc_pauses"):
+                                st.write("**GC events detected in file:**")
+                                for pause in data["gc_pauses"][:5]:
+                                    st.write(f"- `{pause}`")
+                                    
+                            st.write("**Memory Report Preview:**")
+                            st.code(data.get("raw_preview", ""), language="text")
+
+                # 4. Inferences
+                if inf_ctx:
+                    st.markdown("### 📝 Incident Inferences & Investigation Notes")
+                    for file, data in inf_ctx.items():
+                        with st.expander(f"Incident Notes: {file}", expanded=True):
+                            st.markdown(data.get("content", ""))
+        else:
+            st.info("Run analysis to view extracted archive diagnostics.")
 
 else:
     # Landing page

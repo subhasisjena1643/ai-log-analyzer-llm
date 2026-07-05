@@ -2,16 +2,17 @@ paths:
   log_root: "D:/TechMahindra/project 1/LogSpace/LogSpace"
   vector_store: "./data/vectors"
   knowledge_base: "./data/kb/fixes.json"
-  
+
 embedding:
   model_name: "all-MiniLM-L6-v2"
   chunk_size: 500
   chunk_overlap: 50
-  
+
 retrieval:
   top_k: 5
   similarity_threshold: 0.7
-  
+
 ui:
-  max_log_display: 7000 
+  max_log_display: 7000
   ipc_log_path: ipc/log
+  max_upload_size_mb: 5000   # ← ADD THIS

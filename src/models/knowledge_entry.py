@@ -1,24 +1,19 @@
 from dataclasses import dataclass
 
 @dataclass
-class KnowledgeEntry:
-    issue: str
-    root_cause: str
-    solution: str
-    affected_components: list
-    tags: list
-    confidence: float = 1.0
+# src/models/knowledge_entry.py
 
 class KnowledgeEntry:
     def __init__(
         self,
-        issue,
-        root_cause,
-        solution,
+        issue: str,
+        root_cause: str,
+        solution: str,
         affected_components=None,
         tags=None,
-        severity="Medium",
-        resolution_time="1 hour"
+        severity: str = "Medium",
+        resolution_time: str = "1 hour",
+        confidence: float = 1.0
     ):
         self.issue = issue
         self.root_cause = root_cause
@@ -27,3 +22,5 @@ class KnowledgeEntry:
         self.tags = tags or []
         self.severity = severity
         self.resolution_time = resolution_time
+        self.confidence = confidence
+

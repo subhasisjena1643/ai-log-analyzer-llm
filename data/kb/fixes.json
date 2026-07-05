@@ -11,7 +11,8 @@
       "database"
     ],
     "severity": "High",
-    "resolution_time": "1 hour"
+    "resolution_time": "1 hour",
+    "confidence": 1.0
   },
   {
     "issue": "SIP Registration Failed",
@@ -25,7 +26,8 @@
       "network"
     ],
     "severity": "High",
-    "resolution_time": "1 hour"
+    "resolution_time": "1 hour",
+    "confidence": 1.0
   },
   {
     "issue": "API Request Timeout",
@@ -39,7 +41,8 @@
       "latency"
     ],
     "severity": "Medium",
-    "resolution_time": "1 hour"
+    "resolution_time": "1 hour",
+    "confidence": 1.0
   },
   {
     "issue": "High CPU Usage",
@@ -53,7 +56,8 @@
       "cpu"
     ],
     "severity": "High",
-    "resolution_time": "1 hour"
+    "resolution_time": "1 hour",
+    "confidence": 1.0
   },
   {
     "issue": "Memory Leak Detected",
@@ -67,7 +71,8 @@
       "leak"
     ],
     "severity": "Critical",
-    "resolution_time": "1 hour"
+    "resolution_time": "1 hour",
+    "confidence": 1.0
   },
   {
     "issue": "Disk Space Full",
@@ -81,7 +86,8 @@
       "storage"
     ],
     "severity": "High",
-    "resolution_time": "1 hour"
+    "resolution_time": "1 hour",
+    "confidence": 1.0
   },
   {
     "issue": "Service Crash on Startup",
@@ -95,7 +101,8 @@
       "startup"
     ],
     "severity": "Critical",
-    "resolution_time": "1 hour"
+    "resolution_time": "1 hour",
+    "confidence": 1.0
   },
   {
     "issue": "Authentication Failed",
@@ -109,7 +116,8 @@
       "auth"
     ],
     "severity": "High",
-    "resolution_time": "1 hour"
+    "resolution_time": "1 hour",
+    "confidence": 1.0
   },
   {
     "issue": "Configuration Mismatch",
@@ -123,7 +131,8 @@
       "version"
     ],
     "severity": "Medium",
-    "resolution_time": "1 hour"
+    "resolution_time": "1 hour",
+    "confidence": 1.0
   },
   {
     "issue": "Network Latency Spike",
@@ -137,7 +146,8 @@
       "connectivity"
     ],
     "severity": "Medium",
-    "resolution_time": "1 hour"
+    "resolution_time": "1 hour",
+    "confidence": 1.0
   },
   {
     "issue": "Database Deadlock",
@@ -151,7 +161,8 @@
       "transaction"
     ],
     "severity": "High",
-    "resolution_time": "1 hour"
+    "resolution_time": "1 hour",
+    "confidence": 1.0
   },
   {
     "issue": "API 500 Internal Error",
@@ -165,7 +176,8 @@
       "error"
     ],
     "severity": "High",
-    "resolution_time": "1 hour"
+    "resolution_time": "1 hour",
+    "confidence": 1.0
   },
   {
     "issue": "Cache Miss Storm",
@@ -179,7 +191,8 @@
       "cache"
     ],
     "severity": "Medium",
-    "resolution_time": "1 hour"
+    "resolution_time": "1 hour",
+    "confidence": 1.0
   },
   {
     "issue": "Thread Pool Exhausted",
@@ -193,7 +206,8 @@
       "load"
     ],
     "severity": "High",
-    "resolution_time": "1 hour"
+    "resolution_time": "1 hour",
+    "confidence": 1.0
   },
   {
     "issue": "File Permission Denied",
@@ -207,7 +221,8 @@
       "filesystem"
     ],
     "severity": "Medium",
-    "resolution_time": "1 hour"
+    "resolution_time": "1 hour",
+    "confidence": 1.0
   },
   {
     "issue": "SSL Handshake Failure",
@@ -221,7 +236,8 @@
       "certificate"
     ],
     "severity": "Critical",
-    "resolution_time": "1 hour"
+    "resolution_time": "1 hour",
+    "confidence": 1.0
   },
   {
     "issue": "Message Queue Backlog",
@@ -235,7 +251,8 @@
       "performance"
     ],
     "severity": "Medium",
-    "resolution_time": "1 hour"
+    "resolution_time": "1 hour",
+    "confidence": 1.0
   },
   {
     "issue": "Service Dependency Down",
@@ -249,7 +266,8 @@
       "availability"
     ],
     "severity": "High",
-    "resolution_time": "1 hour"
+    "resolution_time": "1 hour",
+    "confidence": 1.0
   },
   {
     "issue": "Load Balancer Misroute",
@@ -263,7 +281,8 @@
       "routing"
     ],
     "severity": "Medium",
-    "resolution_time": "1 hour"
+    "resolution_time": "1 hour",
+    "confidence": 1.0
   },
   {
     "issue": "DNS Resolution Failure",
@@ -277,7 +296,8 @@
       "network"
     ],
     "severity": "High",
-    "resolution_time": "1 hour"
+    "resolution_time": "1 hour",
+    "confidence": 1.0
   },
   {
     "issue": "Backup Job Failed",
@@ -291,7 +311,8 @@
       "storage"
     ],
     "severity": "High",
-    "resolution_time": "1 hour"
+    "resolution_time": "1 hour",
+    "confidence": 1.0
   },
   {
     "issue": "Data Corruption Detected",
@@ -305,7 +326,8 @@
       "recovery"
     ],
     "severity": "Critical",
-    "resolution_time": "1 hour"
+    "resolution_time": "1 hour",
+    "confidence": 1.0
   },
   {
     "issue": "Rate Limit Exceeded",
@@ -319,7 +341,8 @@
       "traffic"
     ],
     "severity": "Medium",
-    "resolution_time": "1 hour"
+    "resolution_time": "1 hour",
+    "confidence": 1.0
   },
   {
     "issue": "Session Expired Error",
@@ -333,7 +356,8 @@
       "auth"
     ],
     "severity": "Low",
-    "resolution_time": "1 hour"
+    "resolution_time": "1 hour",
+    "confidence": 1.0
   },
   {
     "issue": "Log Ingestion Failure",
@@ -347,7 +371,8 @@
       "ingestion"
     ],
     "severity": "Medium",
-    "resolution_time": "1 hour"
+    "resolution_time": "1 hour",
+    "confidence": 1.0
   },
   {
     "issue": "Health Check Failed",
@@ -361,7 +386,8 @@
       "service"
     ],
     "severity": "High",
-    "resolution_time": "1 hour"
+    "resolution_time": "1 hour",
+    "confidence": 1.0
   },
   {
     "issue": "Service Startup Delay",
@@ -375,7 +401,8 @@
       "delay"
     ],
     "severity": "Medium",
-    "resolution_time": "1 hour"
+    "resolution_time": "1 hour",
+    "confidence": 1.0
   },
   {
     "issue": "Index Rebuild Slow",
@@ -389,7 +416,8 @@
       "performance"
     ],
     "severity": "Medium",
-    "resolution_time": "1 hour"
+    "resolution_time": "1 hour",
+    "confidence": 1.0
   },
   {
     "issue": "Webhook Delivery Failed",
@@ -403,7 +431,8 @@
       "network"
     ],
     "severity": "Medium",
-    "resolution_time": "1 hour"
+    "resolution_time": "1 hour",
+    "confidence": 1.0
   },
   {
     "issue": "Configuration Drift Detected",
@@ -417,7 +446,8 @@
       "drift"
     ],
     "severity": "High",
-    "resolution_time": "1 hour"
+    "resolution_time": "1 hour",
+    "confidence": 1.0
   },
   {
     "issue": NaN,
@@ -430,7 +460,8 @@
       "nan"
     ],
     "severity": NaN,
-    "resolution_time": "1 hour"
+    "resolution_time": "1 hour",
+    "confidence": 1.0
   },
   {
     "issue": NaN,
@@ -443,7 +474,8 @@
       "nan"
     ],
     "severity": NaN,
-    "resolution_time": "1 hour"
+    "resolution_time": "1 hour",
+    "confidence": 1.0
   },
   {
     "issue": NaN,
@@ -456,6 +488,7 @@
       "nan"
     ],
     "severity": NaN,
-    "resolution_time": "1 hour"
+    "resolution_time": "1 hour",
+    "confidence": 1.0
   }
 ]

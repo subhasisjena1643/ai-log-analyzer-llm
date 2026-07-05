@@ -1,3 +1,5 @@
+# src/utils/parser.py
+
 from dataclasses import dataclass
 from typing import Optional
 import re
@@ -25,11 +27,17 @@ class StructuredLog:
             "zone": self.zone,
             "client": self.client,
             "app": self.app,
-            "version": self.version
+            "version": self.version,
         }
 
 
 class LogParser:
+    KNOWN_COMPONENTS = [
+        "database", "sip", "api", "auth", "network", "replication",
+        "unigydb", "ccm", "console", "unigy", "heartbeat", "scheduler",
+        "jvm", "gc", "heap", "session", "gateway", "proxy", "cluster"
+    ]
+
     def parse_line(self, line: str, zone: str, client: str, app: str, version: str) -> Optional[StructuredLog]:
         line = line.strip()
         if not line:
@@ -37,30 +45,42 @@ class LogParser:
 
         line_lower = line.lower()
 
-        # ✅ FIX 1: Correct log level detection
-        if "error" in line_lower:
+        # Log level detection — order matters (check WARN before ERROR to avoid double-match)
+        if "error" in line_lower or "exception" in line_lower or "fatal" in line_lower:
             log_level = "ERROR"
         elif "warn" in line_lower:
             log_level = "WARN"
         elif "info" in line_lower:
             log_level = "INFO"
+        elif "debug" in line_lower:
+            log_level = "DEBUG"
+        elif "trace" in line_lower:
+            log_level = "TRACE"
         else:
             log_level = "INFO"
 
-        # ✅ Extract timestamp (basic)
-        timestamp_match = re.match(r"(\d{4}-\d{2}-\d{2})", line)
-        timestamp = timestamp_match.group(1) if timestamp_match else None
+        # Extract timestamp — try ISO-8601 first, then date-only
+        timestamp = None
+        ts_match = re.search(
+            r"(\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})?)",
+            line
+        )
+        if ts_match:
+            timestamp = ts_match.group(1)
+        else:
+            ts_date = re.match(r"(\d{4}-\d{2}-\d{2})", line)
+            if ts_date:
+                timestamp = ts_date.group(1)
 
-        # ✅ Extract error code if present (E_TIMEOUT, ERR-001, etc.)
-        error_code_match = re.search(r"\b(E_[A-Z_]+|ERR-\d+)\b", line)
+        # Extract error code
+        error_code_match = re.search(r"\b(E_[A-Z_]+|ERR-\d+|[A-Z]{2,6}-\d{3,6})\b", line)
         error_code = error_code_match.group(1) if error_code_match else None
 
-        # ✅ Extract component (basic heuristic)
+        # Extract component
         component = None
-        known_components = ["database", "sip", "api", "auth", "network"]
-        for comp in known_components:
+        for comp in self.KNOWN_COMPONENTS:
             if comp in line_lower:
-                component = comp.capitalize()
+                component = comp.upper()
                 break
 
         return StructuredLog(
@@ -72,6 +92,5 @@ class LogParser:
             zone=zone,
             client=client,
             app=app,
-            version=version
+            version=version,
         )
-

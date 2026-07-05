@@ -11,7 +11,7 @@ from src.utils.parser import LogParser
 
 class RAGEngine:
     def __init__(self, config_path="config.yaml"):
-        with open(config_path, "r") as f:
+        with open(config_path, "r", encoding="utf-8") as f:
             self.config = yaml.safe_load(f)
 
         self.vector_store = VectorStore(config_path=config_path)
@@ -19,7 +19,7 @@ class RAGEngine:
         self.parser = LogParser()
         
 
-        print("🧠 RAG Engine initialized")
+        print("[INFO] RAG Engine initialized")
 
     # -------------------------------------------------
     # LOG SEARCH
@@ -70,7 +70,8 @@ class RAGEngine:
         query: str,
         log_data: Dict,
         zone: str = None,
-        client: str = None
+        client: str = None,
+        app: str = None
     ) -> Dict:
 
         log_text = log_data.get("raw", "")
@@ -84,7 +85,7 @@ class RAGEngine:
 
         # LLM-based RCA
         llm_explanation = self.generate_local_ai_explanation(
-            query, error_lines, solutions
+            query, error_lines, solutions, log_data
         )
 
 
@@ -93,7 +94,12 @@ class RAGEngine:
             "llm_explanation": llm_explanation,
             "exact_matches": exact_matches,
             "similar_errors": error_lines,
-            "solutions": solutions
+            "solutions": solutions,
+            "retrieval_filter": {
+                "zone": zone,
+                "client": client,
+                "app": app
+            }
         }
 
     # -------------------------------------------------
@@ -101,24 +107,39 @@ class RAGEngine:
     # -------------------------------------------------
 
     def _generate_simple_rca(self, query, log_data, error_lines, solutions) -> str:
+        sql_ctx = log_data.get("sql_context", {})
+        pdf_ctx = log_data.get("pdf_context", {})
+        mem_ctx = log_data.get("memory_context", {})
+        inf_ctx = log_data.get("inference_context", {})
+        
+        diagnostics = []
+        if sql_ctx:
+            diagnostics.append(f"SQL files parsed: {len(sql_ctx)}")
+        if pdf_ctx:
+            diagnostics.append(f"Healthcheck reports parsed: {len(pdf_ctx)}")
+        if mem_ctx:
+            diagnostics.append(f"JVM Heap diagnostics parsed: {len(mem_ctx)}")
+        if inf_ctx:
+            diagnostics.append(f"Incident notes parsed: {len(inf_ctx)}")
+            
+        diag_str = f" with {', '.join(diagnostics)}" if diagnostics else ""
+        
         if not error_lines:
-            return f"No errors found for query: {query}"
-        return f"Errors found: {len(error_lines)}"
+            return f"No errors found for query: {query}{diag_str}."
+        return f"Errors found: {len(error_lines)}{diag_str}."
 
     # -------------------------------------------------
     # LLM-BASED RCA (AI TAB)
     # -------------------------------------------------
 
+    # In rag_engine.py — replace the broken generate_llm_rca
     def generate_llm_rca(self, query: str, error_lines: list, kb_solutions: list) -> str:
+        """Placeholder — real LLM call is done in app.py via BedrockLLM"""
         logs = "\n".join(error_lines[:5])
-        kb_text = "\n".join([s["solution"] for s in kb_solutions])
-        return self.llm.generate_rca(
-            query=query,
-            logs=logs,
-            kb_context=kb_text
-            )
+        return f"LLM RCA not available in local mode. Query: {query}\nErrors:\n{logs}"
+
     
-    def generate_local_ai_explanation(self, query, error_lines, solutions):
+    def generate_local_ai_explanation(self, query, error_lines, solutions, log_data=None):
         explanation = f"""
     ### 🤖 AI Explanation (Simulated)
 
@@ -126,21 +147,46 @@ class RAGEngine:
 
     **What happened**
     The system logs indicate repeated error patterns related to service failures and operational instability.
+"""
+        if log_data:
+            sql_ctx = log_data.get("sql_context", {})
+            pdf_ctx = log_data.get("pdf_context", {})
+            mem_ctx = log_data.get("memory_context", {})
+            
+            extra_signals = []
+            if sql_ctx:
+                for f, d in sql_ctx.items():
+                    if d.get("errors_found"):
+                        extra_signals.append(f"SQL error in {f}: {d['errors_found'][0]}")
+            if pdf_ctx:
+                for f, d in pdf_ctx.items():
+                    if d.get("failures"):
+                        extra_signals.append(f"PDF Healthcheck failure in {f}: {d['failures'][0]}")
+            if mem_ctx:
+                for f, d in mem_ctx.items():
+                    if d.get("heap_used_mb"):
+                        extra_signals.append(f"JVM Heap usage in {f}: {d['heap_used_mb']:.1f} MB / {d.get('heap_max_mb', 'N/A')} MB")
+                        
+            if extra_signals:
+                explanation += "\n    **Correlated Diagnostic Signals:**\n"
+                for sig in extra_signals[:4]:
+                    explanation += f"    - {sig}\n"
 
+        explanation += """
     **Possible root cause**
-    """
+"""
 
         for line in error_lines[:3]:
-            explanation += f"- {line[:120]}\n"
+            explanation += f"    - {line[:120]}\n"
 
-        explanation += "\n**Recommended fix**\n"
+        explanation += "\n    **Recommended fix**\n"
 
         if solutions:
             for sol in solutions:
-                explanation += f"- {sol['solution']}\n"
+                explanation += f"    - {sol['solution']}\n"
         else:
-            explanation += "- Review service configuration and retry the operation.\n"
+            explanation += "    - Review service configuration and retry the operation.\n"
 
-        explanation += "\n**Prevention**\n- Improve monitoring and alerting\n- Validate configs before deployment\n"
+        explanation += "\n    **Prevention**\n    - Improve monitoring and alerting\n    - Validate configs before deployment\n"
 
         return explanation
