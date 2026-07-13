@@ -15,3 +15,8 @@ boto3
 python-dotenv
 reportlab==5.0.0
 mutagen>=1.47
+
+# --- FastAPI backend (React SPA API layer) ---
+fastapi>=0.115
+uvicorn[standard]>=0.30
+python-multipart>=0.0.9

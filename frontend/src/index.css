@@ -1,0 +1,119 @@
+@import "tailwindcss";
+
+/* ------------------------------------------------------------------ *
+ * LogSentry AI — design tokens
+ * A calm, professional enterprise-observability palette (slate + indigo
+ * accent), tuned for long analyst sessions. Severity colors are AA on the
+ * panel background. Everything is theme-token driven so it stays consistent.
+ * ------------------------------------------------------------------ */
+@theme {
+  --color-canvas: #0b0f1a;
+  --color-surface: #111726;
+  --color-surface-2: #161d2e;
+  --color-elevated: #1c2436;
+  --color-border: #232c40;
+  --color-border-strong: #313d57;
+
+  --color-ink: #e6eaf2;
+  --color-muted: #9aa6bd;
+  --color-faint: #64708a;
+
+  --color-brand: #6366f1;
+  --color-brand-fg: #c7ccff;
+
+  --color-sev-info: #38bdf8;
+  --color-sev-warn: #f5b455;
+  --color-sev-error: #f4736b;
+  --color-sev-critical: #e0457b;
+  --color-ok: #4ade80;
+
+  --font-sans: "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, "SF Mono", "Cascadia Code", Menlo, monospace;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--color-canvas);
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+/* Subtle scrollbars that fit the dark surface */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-border-strong) transparent;
+}
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+*::-webkit-scrollbar-thumb {
+  background: var(--color-border-strong);
+  border-radius: 8px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+
+/* Rich markdown rendering for the RCA panel */
+.prose-rca {
+  line-height: 1.6;
+  font-size: 0.92rem;
+  color: var(--color-ink);
+}
+.prose-rca h1,
+.prose-rca h2,
+.prose-rca h3 {
+  color: var(--color-brand-fg);
+  font-weight: 650;
+  margin: 1.1em 0 0.4em;
+  font-size: 1rem;
+  letter-spacing: 0.01em;
+}
+.prose-rca p {
+  margin: 0.4em 0;
+  color: var(--color-muted);
+}
+.prose-rca ul {
+  margin: 0.3em 0;
+  padding-left: 1.1em;
+  list-style: disc;
+}
+.prose-rca li {
+  margin: 0.25em 0;
+  color: var(--color-ink);
+}
+.prose-rca strong {
+  color: var(--color-ink);
+  font-weight: 620;
+}
+.prose-rca code {
+  font-family: var(--font-mono);
+  font-size: 0.82em;
+  background: var(--color-elevated);
+  border: 1px solid var(--color-border);
+  padding: 0.05em 0.35em;
+  border-radius: 5px;
+  color: var(--color-brand-fg);
+}
+
+@keyframes shimmer {
+  100% {
+    transform: translateX(100%);
+  }
+}
+.shimmer::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  transform: translateX(-100%);
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.04), transparent);
+  animation: shimmer 1.6s infinite;
+}

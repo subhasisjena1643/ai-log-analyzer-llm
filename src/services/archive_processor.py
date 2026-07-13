@@ -108,11 +108,16 @@ class ArchiveProcessor:
         """Wrapper to process the temporary extracted archive folder"""
         return self.process_directory(self.temp_dir, log_parser, zone, client, app, version)
 
-    def process_directory(self, dir_path: str, log_parser, zone: str, client: str, app: str, version: str, parent_rel_path: str = "") -> Dict[str, Any]:
+    def process_directory(self, dir_path: str, log_parser, zone: str, client: str, app: str, version: str, parent_rel_path: str = "", max_structured_entries: Optional[int] = None) -> Dict[str, Any]:
         """
         Walks the specified directory and parses each file.
         Dynamically analyzes content to classify files, extracts archive logs recursively,
         and returns detailed file metadata.
+
+        max_structured_entries: optional cap on retained parsed log entries. Default
+        None preserves the original unbounded behavior; when set, parsing stops
+        accumulating structured logs once the cap is reached (files are still counted).
+        This bounds memory for very large (multi-GB) bundles.
         """
         results = {
             "structured_logs": [],
@@ -177,10 +182,14 @@ class ArchiveProcessor:
                         # Extract it
                         self._extract_file(local_archive_copy, nested_extract_to)
                         
-                        # Process files inside it recursively
+                        # Process files inside it recursively (propagate the memory cap)
+                        remaining_cap = None
+                        if max_structured_entries is not None:
+                            remaining_cap = max(0, max_structured_entries - len(results["structured_logs"]))
                         sub_results = self.process_directory(
                             nested_extract_to, log_parser, zone, client, app, version,
-                            parent_rel_path=os.path.join(parent_rel_path, file)
+                            parent_rel_path=os.path.join(parent_rel_path, file),
+                            max_structured_entries=remaining_cap,
                         )
                         
                         # Merge sub-results
@@ -241,7 +250,14 @@ class ArchiveProcessor:
                     results["file_counts"]["inference"] += 1
                     
                 elif file_type == "App Log" and "logs" in parsed_data:
-                    results["structured_logs"].extend(parsed_data["logs"])
+                    parsed_logs = parsed_data["logs"]
+                    if max_structured_entries is not None:
+                        remaining = max_structured_entries - len(results["structured_logs"])
+                        if remaining > 0:
+                            results["structured_logs"].extend(parsed_logs[:remaining])
+                        # else: cap reached — keep counting the file but stop retaining entries
+                    else:
+                        results["structured_logs"].extend(parsed_logs)
                     results["file_counts"]["logs"] += 1
                     
                     # Store Raw log text for preview

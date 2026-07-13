@@ -16,6 +16,26 @@ from typing import Dict, List, Any, Optional
 from src.services.agent_framework import BaseAgent
 
 
+# SIP is ASCII text carried over UDP/TCP. These line-anchored patterns let us extract
+# call signalling directly from the raw capture bytes without tshark or full packet
+# reassembly — works for classic pcap, pcapng, and text PCAP-AM wrappers alike.
+_SIP_METHODS = "INVITE|ACK|BYE|CANCEL|REGISTER|OPTIONS|SUBSCRIBE|NOTIFY|INFO|PRACK|UPDATE|REFER|MESSAGE"
+_SIP_REQ = re.compile(rf"\b({_SIP_METHODS})\s+sips?:[^\s]+\s+SIP/2\.0\b")
+_SIP_RESP = re.compile(r"\bSIP/2\.0\s+(\d{3})\s+([^\r\n]{0,80})")
+_SIP_CALLID = re.compile(r"(?i)\bCall-ID:\s*(.+)")
+_SIP_CODEC = re.compile(r"a=rtpmap:\d+\s+([A-Za-z0-9.\-]+)/\d+")
+
+# Human-readable meaning for common SIP failure codes (call-setup diagnostics).
+_SIP_CODE_MEANING = {
+    401: "Unauthorized", 403: "Forbidden", 404: "Not Found",
+    408: "Request Timeout", 480: "Temporarily Unavailable", 486: "Busy Here",
+    487: "Request Terminated", 488: "Not Acceptable Here (codec/SDP mismatch)",
+    500: "Server Internal Error", 502: "Bad Gateway",
+    503: "Service Unavailable (gateway overload/down)", 504: "Server Time-out",
+    600: "Busy Everywhere", 603: "Decline", 606: "Not Acceptable (media)",
+}
+
+
 class PCAPAgent(BaseAgent):
     AGENT_NAME = "pcap"
 
@@ -31,24 +51,140 @@ class PCAPAgent(BaseAgent):
 
     def analyze(self, filepath: str, filename: str, **kwargs) -> Dict[str, Any]:
         size_bytes = self.safe_file_size(filepath)
-        filename_lower = filename.lower()
 
-        # Check if it's a text-based PCAP-AM metadata file
+        # Base structural analysis: text PCAP-AM wrapper, or binary packet parse.
         if self._is_text_file(filepath):
-            return self._analyze_pcap_am_text(filepath, filename, size_bytes)
+            result = self._analyze_pcap_am_text(filepath, filename, size_bytes)
+        else:
+            result = self._analyze_pcap_binary(filepath, filename, size_bytes)
 
-        # Try native binary PCAP parsing
-        result = self._analyze_pcap_binary(filepath, filename, size_bytes)
+        # SIP call analysis (dependency-free, streaming) — the primary voice diagnostic.
+        # Runs for pcap, pcapng, and text wrappers; surfaces call-setup failures.
+        sip = self._extract_sip(filepath, size_bytes)
+        if sip:
+            self._merge_sip(result, sip, filename)
 
-        # If tshark is available, enhance with deep analysis
+        # If tshark IS installed, enrich with authoritative SIP call-flow extraction.
         tshark_path = self._find_tshark()
-        if tshark_path and size_bytes < 500 * 1024 * 1024:  # Only for files < 500MB
+        if tshark_path and size_bytes < 500 * 1024 * 1024:
             tshark_result = self._analyze_with_tshark(tshark_path, filepath, filename)
             if tshark_result:
                 result["findings"].extend(tshark_result.get("findings", []))
-                result.get("pcap_data", {}).update(tshark_result.get("tshark_data", {}))
+                result.setdefault("pcap_data", {}).update(tshark_result.get("tshark_data", {}))
 
         return result
+
+    # ------------------------------------------------------------------
+    # SIP extraction (no external dependencies)
+    # ------------------------------------------------------------------
+
+    def _extract_sip(self, filepath: str, size_bytes: int) -> Optional[Dict[str, Any]]:
+        """Stream-scan raw capture bytes for SIP signalling, line by line.
+
+        Bounded so very large captures stay cheap: we scan up to SCAN_CAP bytes of
+        the file (SIP signalling packets are small and typically appear early/often).
+        """
+        SCAN_CAP = 150 * 1024 * 1024
+        CHUNK = 4 * 1024 * 1024
+        MAX_FAILURES = 100
+        MAX_CALLS = 200000
+
+        methods: Dict[str, int] = {}
+        responses: Dict[int, int] = {}
+        reasons: Dict[int, str] = {}
+        failures: List[Dict[str, Any]] = []
+        call_ids = set()
+        codecs = set()
+        msg_count = 0
+
+        try:
+            with open(filepath, "rb") as f:
+                scanned = 0
+                tail = ""
+                while scanned < SCAN_CAP:
+                    chunk = f.read(CHUNK)
+                    if not chunk:
+                        break
+                    scanned += len(chunk)
+                    text = tail + chunk.decode("latin-1", errors="ignore")
+                    lines = text.split("\n")
+                    tail = lines.pop()  # carry the incomplete trailing line to next chunk
+                    for line in lines:
+                        if "SIP/2.0" not in line and "Call-ID" not in line and "rtpmap" not in line:
+                            continue
+                        mreq = _SIP_REQ.search(line)
+                        if mreq:
+                            methods[mreq.group(1)] = methods.get(mreq.group(1), 0) + 1
+                            msg_count += 1
+                        mresp = _SIP_RESP.search(line)
+                        if mresp:
+                            code = int(mresp.group(1))
+                            responses[code] = responses.get(code, 0) + 1
+                            reasons.setdefault(code, mresp.group(2).strip())
+                            msg_count += 1
+                            if code >= 400 and len(failures) < MAX_FAILURES:
+                                failures.append({"code": code, "reason": mresp.group(2).strip()})
+                        mcid = _SIP_CALLID.search(line)
+                        if mcid and len(call_ids) < MAX_CALLS:
+                            call_ids.add(mcid.group(1).strip()[:200])
+                        mcodec = _SIP_CODEC.search(line)
+                        if mcodec:
+                            codecs.add(mcodec.group(1))
+        except Exception:
+            return None
+
+        if msg_count == 0:
+            return None
+
+        fail_total = sum(cnt for code, cnt in responses.items() if code >= 400)
+        return {
+            "sip_message_count": msg_count,
+            "call_count": len(call_ids),
+            "methods": methods,
+            "response_codes": {str(k): v for k, v in sorted(responses.items())},
+            "reasons": {str(k): v for k, v in reasons.items()},
+            "failure_count": fail_total,
+            "codecs": sorted(codecs),
+            "invite_count": methods.get("INVITE", 0),
+            "scanned_bytes": scanned,
+            "truncated_scan": size_bytes > SCAN_CAP,
+        }
+
+    def _merge_sip(self, result: Dict[str, Any], sip: Dict[str, Any], filename: str):
+        """Fold SIP findings/evidence into the base result and pcap_data."""
+        result.setdefault("findings", [])
+        result.setdefault("evidence", [])
+        result.setdefault("pcap_data", {})
+        result["pcap_data"]["sip"] = sip
+
+        calls = sip["call_count"]
+        fails = sip["failure_count"]
+
+        # Per-failure-code findings (5xx = ERROR, 4xx/6xx = WARN)
+        responses = {int(k): v for k, v in sip["response_codes"].items()}
+        for code in sorted(c for c in responses if c >= 400):
+            cnt = responses[code]
+            meaning = _SIP_CODE_MEANING.get(code, sip["reasons"].get(str(code), "Failure"))
+            sev = "ERROR" if 500 <= code < 600 else "CRITICAL" if code >= 600 else "WARN"
+            result["findings"].append({
+                "severity": sev,
+                "message": f"SIP {code} {meaning} in {filename} - {cnt} response(s): call-setup failure",
+            })
+            result["evidence"].append(f"SIP {code} {meaning} x{cnt}")
+
+        if calls:
+            result["evidence"].insert(0, f"SIP: {calls} call(s), {sip['invite_count']} INVITEs, {fails} failed setups"
+                                          + (f", codecs {', '.join(sip['codecs'])}" if sip["codecs"] else ""))
+
+        # Enrich the highlights line
+        meta = result.get("metadata", {})
+        sip_hl = f"SIP calls: {calls} | INVITEs: {sip['invite_count']} | failures: {fails}"
+        if sip["codecs"]:
+            sip_hl += f" | codecs: {', '.join(sip['codecs'])}"
+        meta["highlights"] = (meta.get("highlights", "") + " || " + sip_hl).strip(" |")
+        result["metadata"] = meta
+        if result.get("metadata", {}).get("file_type", "").startswith("PCAP"):
+            result["metadata"]["file_type"] = "PCAP / SIP Voice Capture"
 
     def _analyze_pcap_binary(self, filepath, filename, size_bytes):
         """Native PCAP header parser — no external dependencies."""
@@ -182,25 +318,51 @@ class PCAPAgent(BaseAgent):
         }
 
     def _analyze_with_tshark(self, tshark_path, filepath, filename):
-        """Optional deep analysis via tshark CLI."""
+        """Authoritative deep analysis via tshark CLI when Wireshark is installed."""
         import subprocess
         try:
-            # Get protocol hierarchy
-            result = subprocess.run(
+            findings = []
+            tshark_data = {}
+
+            # Protocol hierarchy
+            phs = subprocess.run(
                 [tshark_path, "-r", filepath, "-q", "-z", "io,phs"],
-                capture_output=True, text=True, timeout=60
+                capture_output=True, text=True, timeout=60,
             )
-            tshark_data = {"protocol_hierarchy": result.stdout[:2000]}
+            tshark_data["protocol_hierarchy"] = phs.stdout[:2000]
 
-            # Try to get SIP statistics
-            sip_result = subprocess.run(
-                [tshark_path, "-r", filepath, "-q", "-z", "sip,stat"],
-                capture_output=True, text=True, timeout=30
+            # Per-message SIP fields: authoritative method / status extraction
+            fields = subprocess.run(
+                [tshark_path, "-r", filepath, "-Y", "sip", "-T", "fields",
+                 "-e", "sip.Method", "-e", "sip.Status-Code", "-e", "sip.Status-Line",
+                 "-E", "separator=|"],
+                capture_output=True, text=True, timeout=90,
             )
-            if sip_result.stdout:
-                tshark_data["sip_statistics"] = sip_result.stdout[:2000]
+            statuses: Dict[str, int] = {}
+            for line in fields.stdout.splitlines():
+                parts = line.split("|")
+                code = parts[1].strip() if len(parts) > 1 else ""
+                if code.isdigit() and int(code) >= 400:
+                    statuses[code] = statuses.get(code, 0) + 1
+            if statuses:
+                tshark_data["sip_failure_codes"] = statuses
+                for code, cnt in sorted(statuses.items()):
+                    ic = int(code)
+                    sev = "ERROR" if 500 <= ic < 600 else "CRITICAL" if ic >= 600 else "WARN"
+                    findings.append({
+                        "severity": sev,
+                        "message": f"[tshark] SIP {code} {_SIP_CODE_MEANING.get(ic, '')} x{cnt} in {filename}",
+                    })
 
-            return {"findings": [], "tshark_data": tshark_data}
+            # RTP stream quality (jitter / packet loss) if present
+            rtp = subprocess.run(
+                [tshark_path, "-r", filepath, "-q", "-z", "rtp,streams"],
+                capture_output=True, text=True, timeout=60,
+            )
+            if rtp.stdout and "SSRC" in rtp.stdout:
+                tshark_data["rtp_streams"] = rtp.stdout[:2000]
+
+            return {"findings": findings, "tshark_data": tshark_data}
         except Exception:
             return None
 
@@ -241,4 +403,14 @@ class PCAPAgent(BaseAgent):
 
     def _generate_summary(self, result):
         total_packets = sum(m.get("packets", 0) for m in result.metrics.values() if isinstance(m, dict))
-        return f"Analyzed {result.file_count} PCAP files. {total_packets:,} total packets captured."
+        calls = 0
+        fails = 0
+        for ctx in result.pcap_context.values():
+            sip = ctx.get("sip") if isinstance(ctx, dict) else None
+            if sip:
+                calls += sip.get("call_count", 0)
+                fails += sip.get("failure_count", 0)
+        base = f"Analyzed {result.file_count} PCAP/SIP files. {total_packets:,} packets captured."
+        if calls or fails:
+            base += f" {calls} SIP call(s), {fails} call-setup failure(s) detected."
+        return base

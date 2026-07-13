@@ -3,6 +3,12 @@ __pycache__/
 *.py[codz]
 *$py.class
 
+# Node / frontend (frontend/dist/ is also caught by the generic dist/ rule below)
+node_modules/
+.tsbuild/
+*.tsbuildinfo
+npm-debug.log*
+
 # C extensions
 *.so
 

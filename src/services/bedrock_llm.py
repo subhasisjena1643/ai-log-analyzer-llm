@@ -180,7 +180,7 @@ class BedrockLLM:
             
         return "\n".join(report)
 
-    def generate_from_agent_results(self, agent_summary_text: str, query: str = "", max_tokens: int = 700) -> str:
+    def generate_from_agent_results(self, agent_summary_text: str, query: str = "", max_tokens: int = 700, temperature: float = 0.2) -> str:
         """
         Generate RCA from pre-digested agent results (Phase 3 distributed pipeline).
         Takes a compressed summary string from AgentResultMerger.build_llm_prompt_context()
@@ -210,7 +210,7 @@ User Query: {query or 'General system health analysis'}
 {agent_summary_text}
 """
         try:
-            result = self.generate(prompt, max_tokens=max_tokens, temperature=0.2)
+            result = self.generate(prompt, max_tokens=max_tokens, temperature=temperature)
             return result
         except Exception as e:
             # Fall back to structured local analysis
