@@ -1,11 +1,11 @@
-# 🚀 LogSentry AI — Enterprise Log Analyzer with LLM-Based Root Cause Analysis
+# LogSentry AI — Enterprise Log Analyzer with LLM-Based Root Cause Analysis
 
 An intelligent diagnostic platform that ingests enterprise log/diagnostic bundles, detects anomalies, and automatically identifies root causes using a distributed multi-agent pipeline and Large Language Models — now with retrieval-augmented reasoning over organizational knowledge (Confluence/Jira), NDA-safe data handling, and a production-grade web UI.
 
-## 🎯 Problem Statement
+## Problem Statement
 In large-scale enterprise systems, manual log analysis across logs, databases, JVM diagnostics, network captures, and healthchecks is time-consuming, error-prone, and doesn't scale to multi-gigabyte incident bundles.
 
-## 💡 Solution
+## Solution
 This project automates end-to-end incident diagnosis:
 - Classifies and parses 8+ diagnostic file types in parallel (logs, SQL, PDF, JVM, PCAP/SIP, audio/CDR, config, SRE notes)
 - Detects anomalies and correlates errors by time
@@ -13,7 +13,7 @@ This project automates end-to-end incident diagnosis:
 - Matches the current incident against prior runbooks and resolved tickets (Confluence/Jira) to narrow down the fix
 - Redacts confidential/PII data before anything is stored, embedded, or sent to the LLM
 
-## 🔥 Key Features
+## Key Features
 - **Distributed multi-agent diagnostics** — 8 specialized agents (App Log, SQL, PDF, JVM, PCAP/SIP, Audio, SRE Notes, Config) run in parallel, each compressing its findings so the LLM sees a dense summary instead of raw multi-GB text
 - **LLM-powered Root Cause Analysis** with severity classification (INFO/WARN/ERROR/CRITICAL) and actionable fix recommendations
 - **Retrieval-augmented reasoning** — matches incidents against Confluence runbooks and Jira tickets, with a synthetic Demo Mode that works with zero external connections
@@ -24,7 +24,7 @@ This project automates end-to-end incident diagnosis:
 - **SIP/voice call diagnostics** — extracts SIP call-setup failures (4xx/5xx/6xx) directly from PCAP captures, with wav/mp3/CDR fallback for audio evidence
 - **Two interfaces**: a modern FastAPI + React SPA (recommended) and the original Streamlit dashboard (legacy)
 
-## 🧠 Workflow
+## Workflow
 1. Ingest a diagnostic bundle (upload, local path, or cloud) — recursive archive extraction, adaptively bounded to the bundle's size
 2. Classify and route each file to its specialized agent, executed in parallel
 3. Detect anomalies and correlate errors across time
@@ -32,14 +32,14 @@ This project automates end-to-end incident diagnosis:
 5. Retrieve and reason over similar past incidents/runbooks (Confluence/Jira or Demo Mode) to narrow the fix
 6. Return a structured report: root cause, impact, suggested fix, confidence, evidence
 
-## 📂 Sample Logs
+## Sample Logs
 Demo logs are available in `ipc/log/demo/`. A synthetic runbook/incident knowledge base and a synthetic SIP-capture generator are also included (`backend/demo/`) so the full pipeline — including knowledge retrieval and voice diagnostics — can be exercised without any real client data.
 
-## ⚙️ Tech Stack
+## Tech Stack
 **Backend:** Python, FastAPI, AWS Bedrock (LLM), FAISS (vector search), sentence-transformers, boto3, Pandas
 **Frontend:** React, TypeScript, Vite, Tailwind CSS (new SPA) · Streamlit (legacy dashboard)
 
-## 🏗️ Architecture
+## Architecture
 
 ```
 Ingestion (upload / local-share / S3)
@@ -59,7 +59,7 @@ Structured RCA Report (React SPA or Streamlit)
 
 See [`backend/README.md`](backend/README.md) for the FastAPI/React architecture in detail, and `CLAUDE.md` for full codebase orientation.
 
-## ▶️ How to Run
+## How to Run
 
 ### Option A — FastAPI + React (recommended)
 
@@ -86,12 +86,12 @@ pip install -r requirements.txt
 streamlit run app.py
 ```
 
-⚠️ **Note:** AWS Bedrock credentials (`.env`) are required for LLM-based analysis. Without them, the application still runs, with RCA falling back to a local rule-based/deterministic analyzer. Confluence/Jira are optional and connected live, in-app, at runtime — **Demo Mode** provides the full retrieval-reasoning experience with zero external connections and no credentials required.
+**Note:** AWS Bedrock credentials (`.env`) are required for LLM-based analysis. Without them, the application still runs, with RCA falling back to a local rule-based/deterministic analyzer. Confluence/Jira are optional and connected live, in-app, at runtime — **Demo Mode** provides the full retrieval-reasoning experience with zero external connections and no credentials required.
 
-## 🔒 Privacy & NDA Safety
+## Privacy & NDA Safety
 All free text reaching the LLM, the API response, or persistent storage is redacted first: PII, secrets, emails, IPs, and API keys are neutralized automatically, and operators can add their organization's confidential client/site names as an additional redaction layer. Parsed diagnostics run under neutral placeholder metadata rather than real client/zone identifiers. Redaction is enforced server-side and cannot be bypassed from the UI.
 
-## 🚀 Recent Enhancements
+## Recent Enhancements
 - **FastAPI + React SPA** — a decoupled, production-shaped web UI alongside the original Streamlit dashboard
 - **Confluence + Jira retrieval-augmented reasoning** with runtime, in-app credential connection and a synthetic Demo Mode
 - **NDA-safe redaction layer** enforced across the entire pipeline
